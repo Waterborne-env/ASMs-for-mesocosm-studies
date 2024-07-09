@@ -1,1 +1,5 @@
+In this folder, you can find the files concerning the comparison among the models, which include:
+1.	Figures comparing models’ scoring
+2.	Table comparing the calibration approaches (Calibration_approach_Table.doc)
+3.	The table showing the represented food web - slight differences exist among models; see the models’ documentation folders for details (FoodWeb_Matrix.xls)
 
