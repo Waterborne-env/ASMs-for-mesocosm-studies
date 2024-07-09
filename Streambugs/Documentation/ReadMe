@@ -6,7 +6,7 @@ In this folder, you can find all the files related to model documentation:
 
 
 **–  Note for the modelers –** 
-•	Please try to be consistent with the files’ name: the TRACE file should be named TRACE_Mesocosm_ASM_ *; the model-input table should be named Model_input_documentation_ *, where * refers to the model name.
+•	Please try to be consistent with the files’ name: the TRACE file should be named TRACE_Mesocosm_ASM_*; the model-input table should be named Model_input_documentation_*, where * refers to the model name.
 •	Check the name of the files you upload and “clean” them (e.g., avoid uploading a table with a date in the name). 
 •	Add an information sheet or section to the extra documents you upload.
 •	Specify the name of the file next to all entries above.
