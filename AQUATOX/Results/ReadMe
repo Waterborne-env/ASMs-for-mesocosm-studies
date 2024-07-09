@@ -1,1 +1,13 @@
+In this folder, you can find the results of model calibration (control and effect) and validation (control and effect).
+In each subfolder, there are the following files:
+1.	Model evaluation with respect to the criteria (Excel tables)
+2.	Figures showing model outputs
+3.	Analysis of the results (if applicable)
+4.	Others
+
+**–  Note for the modelers –** 
+•	Please try to be consistent with the files’ names. The tables showing models’ scores should be named: Model_control_calibration_results_* and Model_control_calibration_results_YN_* (replace calibration with validation in the Validation to control folder); AZT_effect_calibration_results_* (replace calibration with validation in the Validation to effect folder). * refers to the model name.
+•	Check the names of the files you upload and “clean” them (e.g., avoid uploading a table with a date in the name). 
+•	Add an information sheet or section to the extra documents you upload.
+•	Specify the name of the file next to all entries above.
 
