@@ -1,4 +1,8 @@
+This project was coded using the R programmming language. The code developed for this is contained in multiple interacting scripts contained in this folder. Each script is identified using a unique prefix and a title. An index of all scripts be found in the file "Script_Inventory.xlsx". This file list several details about each script, including 
+1) the main function category(e.g., "Data compilation") 
+2) a description of the specific purpose 
+3) any critical decision points included in the script
+4) a description of the scripts outputs
+5) a description how the scripts outputs are used 
 
-–  Note for the modelers – 
-Compile a meaningful README file for your code (if you upload it)
-
+Furtheremore, each script is commented throughout. 
