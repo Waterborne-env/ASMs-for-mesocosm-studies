@@ -2,7 +2,7 @@
 This project was coded using the R programmming language. The code developed for this is contained in multiple interacting scripts contained in several sub-folders in the the folder "R_Analyses". Most scripts have a prefix number (e.g., "01"), and scripts in different sub-folders with the same prefix have similar structures and functions. All scripts are described in the file "Script_Inventory.xlsx". This file list several details about each script, including:  
 
 1) a prefix of the main sub-folder containing a script, 
-2)the prefix of a scripts title   
+2) the prefix of a scripts title   
 3) the main function category(e.g., "Data compilation") 
 4) a description of the specific purpose 
 5) any critical decision points included in the script
@@ -10,4 +10,4 @@ This project was coded using the R programmming language. The code developed for
 7) a description how the scripts outputs are used 
 
 
-All scripts are commented throughout.   
+All scripts are commented throughout. Comments labeled as "QA" were comments to reviewers to check particular issues or code locations for errors. Calls to particular file locations or internet locations may no longer be valid.   
