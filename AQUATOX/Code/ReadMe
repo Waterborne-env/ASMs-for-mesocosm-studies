@@ -1,9 +1,13 @@
 ## README 
-This project was coded using the R programmming language. The code developed for this is contained in multiple interacting scripts contained in this folder. Each script is identified using a unique prefix and a title. An index of all scripts be found in the file "Script_Inventory.xlsx". This file list several details about each script, including 
-1) the main function category(e.g., "Data compilation") 
-2) a description of the specific purpose 
-3) any critical decision points included in the script
-4) a description of the scripts outputs
-5) a description how the scripts outputs are used 
+This project was coded using the R programmming language. The code developed for this is contained in multiple interacting scripts contained in several sub-folders in the the folder "R_Analyses". Most scripts have a prefix number (e.g., "01"), and scripts in different sub-folders with the same prefix have similar structures and functions. All scripts are described in the file "Script_Inventory.xlsx". This file list several details about each script, including:  
 
-Furtheremore, each script is commented throughout. 
+1) a prefix of the main sub-folder containing a script, 
+2)the prefix of a scripts title   
+3) the main function category(e.g., "Data compilation") 
+4) a description of the specific purpose 
+5) any critical decision points included in the script
+6) a description of the scripts outputs
+7) a description how the scripts outputs are used 
+
+
+All scripts are commented throughout.   
