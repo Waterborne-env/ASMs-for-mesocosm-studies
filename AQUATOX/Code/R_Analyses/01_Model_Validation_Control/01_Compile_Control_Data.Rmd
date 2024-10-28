@@ -1,0 +1,123 @@
+---
+title: "01_Compile_Control_Data"
+author: "A. Lindborg"
+date: "4/6/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Organize data from the 3 mesocosm validation control studies into one master dataset. Data are provided by GmbH.
+
+Output = Dataframe with the following columns
+  * Study: 18a, 18b, 19a
+  * Parameter Group: (e.g. chemical parameters, macrophytes, phytoplankton, etc.)
+  * Units or ID: if a species will be units, if a chemical/phy parameter will be study ID
+  * Date: POSIXct date, all in the same format
+  * Enclosure: numbered 1-5 (this is one less than the cailbration data)
+  * Variable: Species name or chemical/physical parameter
+  * Value: measurement (biomass, count, etc.)
+
+
+# History
+4/6/2022 - A. Lindborg modifies script based on L. Mudge Calibration script of same name
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(lubridate)
+
+```
+
+# Data
+* Original Files from Waterborne are organized by experiment & functional group (or physical parameter)
+* Excel file name components are separated by an underscore: experiment _ functional group _ experiment ID
+
+
+# Read in Mesocosm Control Data
+
+```{r read_files}
+
+# Create a path for each experiment folder (note: not using the parent folder bc we don't want the files from _read-me or _received):
+path18a <- "Data/Control Data GmbH/Validation Studies/Control-18a_MesocosmGmbH-ID-1404-48_Lambda"
+path18b <- "Data/Control Data GmbH/Validation Studies/Control-18b_MesocosmGmbH-ID-1506-02"
+path19 <- "Data/Control Data GmbH/Validation Studies/Control-19a_MesocosmGmbH-ID-1510-02"
+
+
+# Create a list of file names:
+files <- list.files(path = c(path18a, path18b, path19),
+                    pattern = "*.csv",
+                    full.names = TRUE)
+
+
+# Create a df that has a nested list of the species data:
+control_data_list <- tibble(filename = files) %>% 
+  mutate(contents = map(filename, ~read_csv(.x, col_names = FALSE, skip_empty_rows = TRUE)), 
+         file_details = map_chr(contents, ~.x[[1,1]]), #first row in each file has context for the data
+         header_line = map(contents, ~.x[2, ]), # pull out the header line with col names
+         data_contents = map2(contents, header_line, ~slice(.x, -c(1:2)) %>% set_names(.y))) %>%
+  select(-contents, -header_line, -filename) %>%
+  separate(col= file_details, into = c("study", "parameter_group", "units_or_id"), sep = "_") %>% #splits file details into 3 columns
+  mutate(units_or_id = 
+           case_when(parameter_group == "Emerging-Insects" ~ "[Individuals/Sample]", #manually edit formatting some units
+                     parameter_group == "Phytoplankton-Chl-a" ~ "ug/L",
+                     parameter_group == "Periphyton-Chl-a" ~ "ug/a",
+                     TRUE ~ units_or_id),
+         data_contents = map(data_contents, ~janitor::remove_empty(.x)), #renaming to match other study naming conventions
+         study = ifelse(study == "Full-Study-18a", "Control-18a", study)) 
+
+# Send individual data frames to the environment- named by parameter group
+list2env(split(x=control_data_list, f=control_data_list$parameter_group), envir=.GlobalEnv) 
+
+```
+
+# Clean & Arrange Master Dataset
+
+The below chunk creates the master dataset (includes all critters, all experiments) using the individual dataframes in the environment. The `Water-Level` and `Sediment-Water-Parameters` are not included in this data cleaning step because they have a different format than the rest of the data (and we don't need these right away)
+
+```{r master_df}
+
+# get a list of data frames- but first remove ones we don't need first (rm= remove)
+#rm(dw)
+rm(control_data_list)
+rm(`Sediment-Water-Parameters`)
+rm(`Water-Level`)
+df_list <- Filter(function(x) is(x, "data.frame"), mget(ls()))
+
+
+# Iterate over a list of data frames:
+  # unnest the data_contents
+  # pivot_longer
+  # filter out any NA from value (so we aren't keeping empty rows)
+  # remove < symbol from values
+  # convert "value" to numeric class
+  # Fix Date column- put into standard format
+  # bind all data together
+
+out <- c()
+
+for(i in seq(1:length(df_list))){
+  tmp <- df_list[[i]] %>%
+    unnest(cols=c(data_contents)) %>%
+    pivot_longer(cols=!c(study:Enclosure), names_to = "Variable", values_to = "Value") %>%
+    filter(!is.na(Value)) %>%
+    mutate(Value = as.numeric(gsub("<", "", Value)),
+           Date = lubridate::parse_date_time(x=Date, orders = c("m/d/Y", "d/m/Y","m/d/y", "d.m.Y"), tz = "UTC"),
+           date2= Date) # created 2ndary date column so can set all years to be the same, below
+  
+  out <- bind_rows(out, tmp)
+  
+  
+}
+
+lubridate::year(out$date2) <- 2021
+out <- janitor::clean_names(out)
+
+#write_csv(out, "Output/01_Compile_Control_Data/control_long.csv")
+#saveRDS(out, file = "Output/01_Compile_Control_Data/control_long.rds")
+
+```
+

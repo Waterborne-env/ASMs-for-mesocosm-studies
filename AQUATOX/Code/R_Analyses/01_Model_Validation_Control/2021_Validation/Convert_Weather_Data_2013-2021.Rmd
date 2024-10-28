@@ -1,0 +1,148 @@
+---
+title: "2013-2021 weather data conversions"
+author: "Analise Lindborg"
+date: "2022-11-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+Convert 2013-2021 weather data to AQUATOX input format
+
+
+# History
+11/28/2022 - A. Lindborg modifies weather data
+04/05/2023 - A Lindborg modifies weather output to include new weather station data for 2021
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(lubridate)
+
+```
+
+#NEW CODE - 2021 ONLY
+
+```{r langley_calc}
+
+d.weather <- read.csv("\\\\integral-corp.com/data/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Validation_to_control_2021/R Inputs/Weather_2021_MesocosmGmbH_AachenStation_RInput.csv", stringsAsFactors = FALSE)
+
+
+names(d.weather) <- c("Date", "Time","Temp_C", "RelHumidity", "Windspeed_ms", "WindDirection", "Precipitation", "AirPressure_hPa", "Global_Radiation_J_per_cm2", "Light_Langley_per_day")
+
+
+
+d.light <- d.weather %>%
+  dplyr::select(Date, Time, Global_Radiation_J_per_cm2, Light_Langley_per_day) %>%
+  mutate(Global_Radiation_J_per_cm2 = as.numeric(Global_Radiation_J_per_cm2)) %>%
+  #create hour column
+  mutate(hour = str_extract(Time, "^[^:]+"),
+         am.pm = str_extract(Time, ":[^:]+$"),
+         hour_time = paste(hour, am.pm, sep = ""))
+
+############# DATA WRANGLING ##############
+### Convert light variable: 
+
+#Conversion 1: J/cm2 --> W/m2
+  # --> to get hourly data, average W/m2 over entire hour
+
+#1) Fill in column for radiation in units of W/m2 per day:
+d.watts <- d.light %>%
+  #         #convert J/cm2 to J/m2
+  # mutate(j.m2 = Global_Radiation_J_per_cm2*10000,
+  #       #calculate W/m2 by dividing J/m2 by 600 (# of seconds in 10 minutes) (standard formula: W = J/s)
+  #        Global_Radiation_W_per_m2  = j.m2/600) %>%
+  #calculate W/m2 per hour
+    group_by(Date, hour_time, Light_Langley_per_day) %>%
+  summarize(Global_Radiation_W_per_m2_hour = mean(Global_Radiation_J_per_cm2)) %>%
+  ungroup()
+
+#Conversion 2: W/m2 --> Langley/day
+  # --> 1 Langley/day = 0.484583 Watt/m2- from USDA source in notes; use reverse because we are going from Watt/m2 to Langley
+  watt_to_lang <-  1/0.484583
+
+d.lang <- d.watts %>%
+  mutate(Light_Langley_per_day = Global_Radiation_W_per_m2_hour* watt_to_lang) %>%
+  mutate(DateTime = paste(Date, hour_time, sep = " ")) %>%
+  select(DateTime, Light_Langley_per_day) %>%
+  relocate(DateTime, .before=Light_Langley_per_day) %>%
+  filter(!is.na(Light_Langley_per_day))
+
+#write output file
+write.xlsx(d.lang, "2021_Validation/Output/Light_2021_UpdatedConversion_LangleyPerDay.xlsx")
+
+```
+
+
+
+#OLD CODE -ALL YEARS
+```{r langley_calc}
+d.weather <- read.csv("\\\\integral-corp.com/data/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Validation_to_control_2021/R Inputs/_archive/Weather-2013-2021_MesocosmGmbH_Station35km_RInput.csv", stringsAsFactors = FALSE)
+
+names(d.weather) <- c("Date", "Time","Temp_C","AirPressure_hPa", "RelHumidity", "Windspeed_ms", "Global_Radiation_W_per_m2", "Light_Langley_per_day")
+
+d.light <- d.weather %>%
+  dplyr::select(Date, Time, Global_Radiation_W_per_m2, Light_Langley_per_day) %>%
+  mutate(Global_Radiation_W_per_m2 = as.numeric(Global_Radiation_W_per_m2)) 
+
+############# DATA WRANGLING ##############
+### Convert light variable: 
+
+#Conversion: W/m2 --> Langley/day
+  # --> 1 Langley/day = 0.484583 Watt/m2- from USDA source in notes; use reverse because we are going from Watt/m2 to Langley
+  watt_to_lang <-  1/0.484583
+
+#1) Fill in column for radiation in units of W/m2 per day:
+d.converted <- d.light %>%
+  mutate(Light_Langley_per_day = Global_Radiation_W_per_m2* watt_to_lang,
+         DateTime = as.POSIXct(as.character(paste(Date, Time)), format="%m/%d/%Y %H:%M:%S"),
+         hour = str_extract(Time, "^[^:]+"),
+         am.pm = str_extract(Time, ":[^:]+$"),
+         Time = paste(hour, am.pm, sep = ""),#Time = format(DateTime, "%I:%M %p", usetz = F), #this code isnt working as expected, converting everything to AM
+         Year= lubridate::year(DateTime)) %>%
+  dplyr::select(Year, Date, Time, Light_Langley_per_day)
+
+  ## Manually fix NAs for the time stamp; fixing that here. Format DateTime for Aquatox, remove rows with missing light data:
+df <- d.converted %>%
+  mutate(Time = ifelse(is.na(Time), paste("12:00 AM"), Time),
+         Year = ifelse(is.na(Year), str_sub(Date, start=-4), Year),
+         DateTime = paste(Date, Time, sep = " ")) %>%
+  dplyr::select(-Date, -Time) %>%
+  relocate(DateTime, .after=Year) %>%
+  filter(!is.na(Light_Langley_per_day))
+
+
+#2) Save df, but data for one year per sheet in Excel:
+  #Smartsheet will only allow uploads with <20,000 rows so we are uploading all data as annual sheets
+  # sample code: https://martinctc.github.io/blog/vignette-write-and-read-multiple-excel-files-with-purrr/
+
+  # Creates a list of dataframes
+df.list <- split(df, as.factor(df$Year)) 
+  
+  # Name the Dataframes, so they will appear on the sheets when written
+names(df.list) <- df.list %>%
+  purrr::map(~pull(.,Year)) %>% # Pull out year variable
+  purrr::map(~as.character(.)) %>% # Convert numeric to character
+  purrr::map(~unique(.)) #set each year as a name
+
+# Write the excel file:
+df.list %>%
+  openxlsx::write.xlsx("2021_Validation/Output/Light_2013-2021_LangleyPerDay.xlsx")
+
+# save copy of full df
+    # 3/3/21-- format changes if save as .csv (even if do manually), so save as XLSX for now
+
+openxlsx::write.xlsx(df, "2021_Validation/Output/Light_2013-2021_LangleyPerDay_all.xlsx")
+
+## Get list of dates that have missing data for light variable:
+
+df.na <- d.converted %>%
+  filter(is.na(Light_Langley_per_day)) %>%
+  distinct(Date)
+#write_csv(df.na, "Output/Missing_light_data.csv")
+
+
+```
+

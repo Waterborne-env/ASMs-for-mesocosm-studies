@@ -1,0 +1,149 @@
+---
+title: "Convert Zooplankton Abundances to Biomass"
+author: "L.Mudge"
+date: "1/6/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Convert zooplankton control data from abundance to biomass, using recent length-weight information provided by GmbH.
+
+## Steps
+1) Determine biomass per individual
+    - Use the "regression midpoints" values provided by Jurgen/GmBH, on the "Zooplankton" tab in the "Additional Parameters Mesocosm 211210_vs.xlsx" worksheet.
+    - Assign each group it's length/weight (LW) value. 
+    - If a specific species doesn't have LW values, assign the LW values of the closest proximity 
+    
+2) Convert control data measurements from abundance (individuals/L) to biomass (g/m2 or g/L)
+  
+3) Sum the total biomass for the modeled group
+    - For multi-species groups (e.g. Rotifers), determine biomass for each of the species (above step), but sum together for 1 group biomass value
+  
+# Documentation
+Relevant files in the documentation folder calibration analyses:
+
+"Email_Decision_on_Calibration_Biomass_Conversion_2021-12-10.pdf"
+"Email_Updated_Length_Data_2021-12-10.pdf"
+
+# History
+01/06/2021 - Script created - L.Mudge
+01/24/2022 - L.Mudge reruns with updated units & conversion equations from "SpeciesList_ConrolData_v_Aquatox.xlsx" file
+02/04/2022 - Added chunk that saves the conversion factors - L.Mudge
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+
+options(scipen = 9999)
+```
+
+# Data
+This analysis uses 3 data sets:
+
+1. Individual weights for Zooplankton species
+    - Most Zooplankton LW measurements were collected by GmbH in 2021; Cladoceran values came from literature reviews
+
+2. Conversion factors from Waterborne:
+  - These were determined from previous meetings and are for converting individuals/sample to individuals/area for the Mesocosm control data
+  
+3. Mesocosm control data from Waterborne
+  -abund_sum_lifestage = sample abundances, with lifestages rolled up into 1 value (e.g. can include larvae, pupae, adults)
+
+```{r data}
+# Compiled values for individual weights:
+dw <- read.xlsx("Input/Zooplankton_Biomass_Conversions.xlsx", sheet = "zooplankton_weights")
+
+# Conversion information:
+cf <- read.xlsx("R_Analyses/SpeciesList_ControlData_v_Aquatox.xlsx",
+                  sheet = "Species List for Conversions") %>%
+  janitor::clean_names() %>%
+  filter(parameter_group == "Zooplankton", consensus_group != "Nauplia") %>%
+  dplyr::select(parameter_group:mesocosm_units, units_for_aquatox, apply_species_lw_data) %>%
+      # Add the individual weight values, convert any in ug to mg:
+  mutate(weight_per_ind = dw$weight_per_individual[match(.$apply_species_lw_data, dw$Taxon)],
+         original_wt_units = dw$units_weight[match(.$apply_species_lw_data, dw$Taxon)],
+         weight_mg_per_ind = ifelse(original_wt_units == "ug", weight_per_ind/1000, weight_per_ind)) # convert all weights to mg
+
+cf$variable[cf$variable=="Diaptomidae (adult)"] <- "Diaptomidae" # rename to match control data merging later on
+cf$variable[cf$variable=="Diaptomidae (Copepodit)"] <- "Diaptomidae" # rename to match control data merging later on
+cf$variable[cf$variable=="Cyclopidae (adult)"] <- "Cyclopidae" # rename to match control data merging later on
+cf$variable[cf$variable=="Cyclopidae (Copepodit)"] <- "Cyclopidae" # rename to match control data merging later on
+
+
+
+# Control data
+d.meso <- readRDS("Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds") %>% 
+  filter(parameter_group=="Zooplankton", variable != "Nauplia") %>% # remove Nauplia, not modeling
+  dplyr::select(study:date, abund_sum_lifestage)
+
+
+
+# Combine control data w/conversion information:
+d <- left_join(d.meso, cf%>% dplyr::select(-apply_species_lw_data, -weight_per_ind, -original_wt_units, -mesocosm_units))
+
+# View(d %>% distinct(consensus_group, variable, weight_mg_per_ind)) # check, correct!
+```
+
+# Biomass Conversions
+1. Calculate species-specific biomass
+    * Vol_to_area ratio have been defined for cases when units change from volume to area (L to m2)
+        * 1760 = volume of water (L) in the enclosures (i.e. total volume critters could live in)
+        * 8.15 = area of enclosures (m2)
+        
+2. Sum biomass values by study, enclosure, date, and Aquatox record grouping (same as consensus_group)
+    * We need to report 1 biomass value per study/enclosure/date/group.
+    * Groupings are the same as consensus groups (i.e. one Aquatox record per consensus group)
+```{r biomass_conversions}
+#View(d %>% distinct(consensus_group, variable, units_or_id, units_for_aquatox))
+
+#two scenarios: 
+    # ind/L --> g/m2
+    # ind/L --> mg/L
+
+vol_to_area <- 1760/8.15
+
+d.bio <- d %>%
+  mutate(sp_biomass = case_when(
+            units_or_id == "[Individuals/L]"  & units_for_aquatox == "mg/L dry" ~ abund_sum_lifestage*weight_mg_per_ind,
+            units_or_id == "[Individuals/L]" & units_for_aquatox == "g/m2 dry" ~ (abund_sum_lifestage*vol_to_area*weight_mg_per_ind)/1000)) %>% # divide by 1000 to go from mg to g
+  group_by(study, enclosure, date, consensus_group) %>%
+  mutate(group_abundance = sum(abund_sum_lifestage),
+         group_biomass = sum(sp_biomass)) %>%
+  distinct(study, enclosure, parameter_group, consensus_group, date, units_for_aquatox, group_biomass, group_abundance)
+
+#write.csv(d.bio, paste0("Output/07_Biomass_Conversions/Zooplankton_Biomass_by_ModeledGroups_", Sys.Date(), ".csv"))
+
+```
+
+```{r save_cf}
+# Added 2/4 - saving conversion factor information for converting calibration criteria to biomass
+
+cf.save <- cf %>%
+  mutate(vol_to_area = ifelse(mesocosm_units == "[Individuals/L]" & units_for_aquatox == "g/m2 dry", vol_to_area, NA_real_))
+
+#write_csv(cf.save, "Output/07_Biomass_Conversions/Zooplankton_conv_factors.csv")
+```
+
+
+
+Subset table for Aquatox Overlay data file:
+-12/14: B.Sackmann requested a table for Aquatox that has the species, date, biomass, study, enclosure, and units
+```{r A_overlay}
+
+# Output in format for AQUATOX observed values overlay:
+AQ_Zooplankton <- d.bio %>%
+  dplyr::select(consensus_group, date, group_biomass, study, enclosure, units_for_aquatox, group_abundance) %>%
+  rename(species_group = consensus_group) %>%
+  mutate(non_detects = 0, 
+         min_bar_value = group_biomass,
+         max_bar_value = group_biomass)
+#write.csv(AQ_Zooplankton, paste0("Output/07_Biomass_Conversions/Aquatox_Zooplankton_Overlay_", Sys.Date(), ".csv"))
+
+```
+

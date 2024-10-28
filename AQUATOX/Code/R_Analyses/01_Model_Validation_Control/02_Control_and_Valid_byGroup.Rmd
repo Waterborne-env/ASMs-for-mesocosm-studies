@@ -1,0 +1,86 @@
+---
+title: "Make intermediate tables with validation data"
+author: "A. Lindborg"
+date: "4/8/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+1) Take the control data set w/calibration groups and make several intermediary summary tables. For some groups (e.g. Chaoborus), all the lifestages need to be rolled up (e.g. larvae and pupae) so there is 1 abundance value for Chaoborus per study/enclosure/date.
+
+
+**This script rolls up the taxon specific data to evaluate calibration criteria at the level of consenus group**
+I followed the methods outlined by Waterborne in the criteria_groups excel sheets, which are in the "Calibration documents from Waterborne" folder in the main R repo for this project.
+
+
+# History
+4/6/2022 - A. Lindborg modifies script based on L. Mudge Calibration script of same name
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(lubridate)
+library(RColorBrewer)
+library(imputeTS)
+
+```
+
+# Data
+Read in the mesocosm control data & compiled calibration criteria
+* For the intermediary datasets, we are interested in the critters considered for calibration (macroinverts, zooplankton, periphyton, and phytoplankton)
+
+```{r raw_data}
+
+## Control data: only groups considered for calibration criteria
+d <- read_csv("Output/01_Compile_Control_Data/control_data_for_validation.csv")
+
+## Calibration criteria
+crit <- read.xlsx("R_Analyses/compiled_calibration_crit.xlsx",
+                  sheet = "calib_crit",
+                  detectDates = TRUE) %>%
+  rename(crit_min = min_value,
+         crit_max = max_value)
+
+#peak_dates <- crit %>% distinct(parameter_group, consensus_group, peak_date_start, peak_date_end)
+
+## Enclosure information
+encl <- read.csv('//pfs1w/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Mesocosm/GmbH_Mesocosm_Specifications.csv')
+
+
+```
+
+# 1. Sum abundances for taxa with multiple life stages - by study/enclosure, parameter_group, consensus_group, DATE
+
+* Macroinverts - Chaoborus, Chironomidae, Tanypodinae
+* Zooplankton - Diaptomidae & Cyclopidae (predatory copepods)
+
+4/28/2021- fixed selection of Cyclopidae (had 2 spellings) - LM
+
+```{r sum_life_stages}
+# rename variables so diff life stages have the same name
+# group by study, encl, param group, cons grp, var, date 
+# mutate, new_val = sum(val) -- check: life stage species should still have 2 rows, see summed value; non-life stage groups new_val=Val
+# then use distinct on grouping vars
+
+d.sum <- d %>%
+  mutate(variable = case_when(
+         grepl("Chaoborus", variable) ~ "Chaoborus sp.",
+         grepl("Chironomidae", variable) ~ "Chironomidae",
+         grepl("Tanypodinae", variable) ~ "Tanypodinae",
+         grepl("Diaptomidae", variable) ~ "Diaptomidae",
+         grepl("Cyclopoidae", variable) ~ "Cyclopoidae", 
+         grepl("Cyclopidae", variable) ~ "Cyclopoidae",
+         TRUE ~ variable)) %>%
+  group_by(study, enclosure, parameter_group, consensus_group, variable, date) %>%
+  mutate(abund_sum_lifestage = sum(value)) %>%
+  ungroup() %>%
+  distinct(study, enclosure, parameter_group, consensus_group, variable, date, .keep_all = TRUE) %>%
+  dplyr::select(-value)
+
+write_csv(d.sum, "Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.csv")
+saveRDS(d.sum, "Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds")
+ 
+```
+

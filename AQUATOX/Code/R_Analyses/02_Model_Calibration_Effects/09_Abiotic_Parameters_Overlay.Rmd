@@ -1,0 +1,155 @@
+---
+title: "Physical and chemical parameter overlay file"
+author: "A. Lindborg"
+date: "5/9/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Compile all physical and abiotic parameters for the Aquatox Overlay File.
+
++ = dataset the variable can be found in
+** = No data provided by Waterborne/GmBH
+
+Physical parameters that are AQ state variables:
+  - Water volume          + Mesocosm effects data
+  - Temperature           + Mesocosm effects data (for enclosure); + Simulated data from gaiac
+  - Wind Loading          + MET data  
+  - Light                 + MET data
+  - pH                    + Mesocosm effects data
+  
+Chemical Parameters that are AQ state variables:
+  - Total Ammonia as N    + Mesocosm effects data
+  - Nitrate as N          + Mesocosm effects data  
+  - Total Soluble P       + Mesocosm effects data
+  - Carbon Dioxide**
+  - Oxygen                + Mesocosm effects data
+  
+
+
+# Documentation
+
+# History
+4/6/2022 - A. Lindborg modifies script based on L. Mudge Calibration script of same name
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+options(scipen = 9999)
+```
+
+# Steps
+1. Load the data & filter for the variables needed
+
+2. For water volume- convert from liters to cubic meters (units req. for Aquatox)
+
+3. Create a mock timeseries for water level. Even though volume remains constant in each study, want a timeseries for the overlay file- just use the dates from the physical/chem parameter data
+
+4. Combine the water vol data to the rest of the phy/chem data
+
+**MET data will be saved separately-- these variables (light and wind) have hourly measurements, formatted with a specific way that AQ reads in DateTime stamps
+
+
+# Load and organize parameters from effects Data:
+```{r control_params}
+# Load effects Mesocosm study data -- filter for variables and clean up units:
+cd <- read.csv("Output/01_Compile_Effects_Data/effects_long.csv") %>%
+  filter(parameter_group %in% c("Chemical-Parameters", "Physical-Parameters")) %>%
+  separate(variable, into=c("variable", "units"), sep=" ") %>%
+  filter(variable %in% c("Nitrate", "Phosphate", "Ammonium", "Temperature", "Oxygen", "pH")) %>%
+  mutate(units = case_when(
+    variable %in% c("Nitrate", "Ammonium", "Phosphate", "Oxygen") ~ "mg/L",
+    variable == "Temperature" ~ "deg_C"),
+    date = as.POSIXct(date, format="%Y-%m-%dT%H:%M")) %>%
+  dplyr::select(-units_or_id, -date2)
+
+
+# specifying this is for the enclosure because we also have air temperature from weather stations
+cd$variable[cd$variable == "Temperature"] <- "Temp_enclosure" 
+
+
+
+
+# Water Level/ Volume -- convert from L to cubic meters; filter for studies that are in effects data; remove var with liters
+wl <- read_csv("Input/GmbH_Mesocosm_Specifications_copied01-17-22.csv") %>%
+  janitor::clean_names() %>%
+  dplyr::select(dataset_name, enclosure_water_volume_l) %>%
+  mutate(value = enclosure_water_volume_l/1000,
+         variable = "Water_Volume",
+         units = "cubic_meters") %>%
+  rename(study = dataset_name) %>%
+  filter(study %in% unique(cd$study)) %>%
+  dplyr::select(-enclosure_water_volume_l)
+
+# Create a mock timeseries for water volume: 
+wl.ts <- cd %>%
+  distinct(study, enclosure, date) %>%
+  left_join(., wl) %>%
+  mutate(parameter_group = "Physical-Parameters")
+
+```
+
+
+# Load simulated water temp data from Gaiac:
+```{r water_temp}
+# WATER TEMPS
+water.temp <- read_csv("Output/Daily_Mean_Water_Temp_2013-2019_Mesocosm_Homberg.csv") %>%
+  dplyr::select(-day) %>%
+  rename(value = mean_temp_deg_C,
+         date=Date) %>%
+  mutate(variable = "Avg_Water_Temp",
+         units = "deg_C",
+         date = as.Date(date),
+         parameter_group = "Physical-Parameters")
+```
+
+
+# Combine mesocosm & simulated water temps together for an aq_overlay file:
+```{r}
+pc_aquatox <- bind_rows(cd, wl.ts, water.temp)
+write.csv(pc_aquatox, "Output/09_Abiotic_Parameters_for_Overlay/Phys_Chem_Overlay_Data.csv")
+```
+
+
+# Load and organize parameters from Meterological Data:
+```{r met_data}
+
+# LIGHT
+light <- read.xlsx("Output/Light_2013-2019_LangleyPerDay_all.xlsx") %>%
+  dplyr::select(-Year) %>%
+  rename(date = DateTime,
+         value = Light_Langley_per_day) %>%
+  mutate(variable = "Light",
+         units = "Ly/day")
+
+# WIND SPEED
+    ## Follow methods from C3143_Weather_Data_Conversions.R to save timestamp in a format that Aquatox will read.
+wind <- read.csv("Input/Weather-2013-2019_MesocosmGmbH_Station35km_RInput.csv") %>%
+  janitor::clean_names() %>%
+  dplyr::select(date, time, windspeed_m_s) %>%
+  mutate(DateTime = as.POSIXct(as.character(paste(date, time)), format="%m/%d/%Y %H:%M:%S"),
+         Time = format(DateTime, "%I:%M %p", usetz = F)) %>%
+  dplyr::select(-time) %>% 
+  mutate(Time = ifelse(is.na(Time), paste("12:00 AM"), Time),
+         DateTime = paste(date, Time, sep = " ")) %>%
+  dplyr::select(-date, -Time) %>%
+  rename(value = windspeed_m_s,
+         date = DateTime) %>%
+  mutate(variable = "Windspeed",
+         units = "m/s")
+
+wind$value <- as.numeric(wind$value)
+# Combine MET data for AQ overlay:
+  ## NAs in the wind data are expected -- checked that they are missing from the raw data (which was known to have missing values from some sensor malfunctions)
+  ## Save as .xlsx because the date format will change if save as .csv
+met_overlay <- bind_rows(light, wind) %>%
+  openxlsx::write.xlsx(., "Output/09_Abiotic_Parameters_for_Overlay/MET_Overlay_Data.xlsx")
+
+```

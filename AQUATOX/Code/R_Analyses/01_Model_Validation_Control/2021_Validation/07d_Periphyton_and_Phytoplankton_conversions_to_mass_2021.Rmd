@@ -1,0 +1,115 @@
+---
+title: "Convert Periphyton and Phytoplankton chl-a to biomass"
+author: "A. Lindborg"
+date: "4/8/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Convert periphyton and phytoplankton control data from chl-a to grams/m2 for comparison to Aquatox results.
+
+# Documentation
+Conversion factors are documented in the "SpeciesList_ControlData_v_Aquatox.xlsx" and were decided upon by B.Sackmann using AQUATOX technical documentation. Equations used to convert to biomass are outlined in the section below- coming from internal weekly meeting conversation w/Brandon on 1/11/2022.
+
+
+# History
+11/30/2022 - A. Lindborg creates script
+04/28/2023 - A. Lindborg updates to include full 2021 dataset
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+
+options(scipen = 9999)
+```
+
+# Data
+```{r data}
+
+d.meso <- readRDS("Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds") %>% 
+  filter(parameter_group == "Periphyton-Chl-a" | parameter_group == "Phytoplankton-Chl-a") %>%
+  dplyr::select(study:date, abund_sum_lifestage)
+
+cf <- read.xlsx("//integral-corp.com/data/C2000-C3999/C3143_Mesocosm_Waterborne/Working_Files/R_Analyses/SpeciesList_ControlData_v_Aquatox.xlsx",
+                  sheet = "Conv_Document_for_Waterborne") %>%
+  janitor::clean_names() %>%
+  filter(parameter_group == "Periphyton-Chl-a" | parameter_group == "Phytoplankton-Chl-a") %>%
+  dplyr::select(parameter_group, consensus_group, conversion_equation_mesocosm_abundance_to_biomass, biomass_units_for_aquatox) %>%
+  mutate(conv_factor = as.numeric(readr::parse_number(conversion_equation_mesocosm_abundance_to_biomass))) #%>%
+  #dplyr::select(-conversion_equation_mesocosm_abundance_to_biomass)
+```
+
+# Convert to Biomass
+Periphyton: 
+  - control units given as ug/a where area = 185.5cm2. This value already accounted for in the derivation of the conv_factor, per B.Sackmann.
+  -equation: (ChlA) * conv_factor * scaling_factor
+    * ChlA = the abundance value from the control data
+    * scaling_factor = accounts for walls of enclosures, derived by B.Sackmann (4.35x)
+
+Phytoplankton;
+  -control units given as ug/L
+  -equation: [Biomass of a given alga]/CHlA extracted * (Phyto ug/L)
+      * Biomass of given alga = 0.0211 or 0.0131 (conv_factor, values in the documentation); 
+      * Chl A extracted = 0.2464
+      * Phyto ug/L = abundance value from control data.
+
+```{r conversion}
+# Define scaling factor:
+scaling_factor <- 4.35
+
+#max_value = max(plants$abund_sum_lifestage) #114.4
+
+AQ_PeriPhyton <- left_join(d.meso, cf) %>%
+    # Create species_group that includes param group- will need for labeling tabs and knowing which are peri and which are phyto:
+  mutate(species_group = ifelse(parameter_group == "Periphyton-Chl-a", paste0("Peri ", consensus_group), paste0("Phyto ", consensus_group))) %>%
+  rename(group_abundance = abund_sum_lifestage,
+         units_for_aquatox = biomass_units_for_aquatox) %>%
+  mutate(
+    group_biomass = case_when(
+      parameter_group == "Periphyton-Chl-a" ~ conv_factor*group_abundance*scaling_factor,
+      parameter_group == "Phytoplankton-Chl-a" ~ (conv_factor/0.2464)*group_abundance),
+    non_detects = 0, 
+    min_bar_value = group_biomass,
+    max_bar_value = group_biomass)
+
+# Calculate a sum total biomass for each group- Periphyton and Phytoplankton - per study/enclosure/date
+pp_total <- AQ_PeriPhyton %>%
+  group_by(parameter_group, study, enclosure, date) %>%
+  mutate(species_group = ifelse(parameter_group == "Periphyton-Chl-a", "Total Periphyton", "Total Phytoplankton"),
+         group_biomass = sum(group_biomass),
+         min_bar_value = group_biomass,
+         max_bar_value = group_biomass) %>%
+  ungroup() %>%
+  distinct(parameter_group, species_group, study, enclosure, date, group_biomass, .keep_all = TRUE) %>%
+  dplyr::select(-parameter_group, -consensus_group, -variable, -units_or_id, -conv_factor, -conversion_equation_mesocosm_abundance_to_biomass)
+
+# Bind the "total" group values to the species level biomass values and save:
+AQ_PeriPhyto_Total <- bind_rows(AQ_PeriPhyton, pp_total) %>%
+  dplyr::select(-parameter_group, -consensus_group, -variable, -units_or_id, -conv_factor, -conversion_equation_mesocosm_abundance_to_biomass)
+
+  
+
+write.csv(AQ_PeriPhyto_Total, paste0("Output/07_Biomass_Conversions/Aquatox_PeriPhyto_Overlay_", Sys.Date(), ".csv"))
+
+
+```
+
+```{r save_cf}
+# Added 2/4/22 for use in converting calibration criteria- LMUDGE
+cf.save <- cf %>%
+  add_row(parameter_group = "Periphyton-Chl-a", consensus_group = "Total Periphyton", .after = 3) %>%
+  add_row(parameter_group = "Phytoplankton-Chl-a", consensus_group = "Total Phytoplankton") %>%
+  fill(c(parameter_group: conv_factor)) %>%
+  mutate(chlA_extracted = ifelse(parameter_group == "Phytoplankton-Chl-a", 0.2464, NA_real_),
+         scaling_factor = ifelse(parameter_group == "Periphyton-Chl-a", 4.35, NA_real_))
+
+write_csv(cf.save, "Output/07_Biomass_Conversions/Phyto_Peri_Conversion_Factors.csv")
+
+```
+

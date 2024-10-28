@@ -1,0 +1,264 @@
+---
+title: "Control Data Tables: Various Groupings"
+author: "L.Mudge"
+date: "4/21/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+1) Take the control data set w/calibration groups and make several intermediary summary tables. For some groups (e.g. Chaoborus), all the lifestages need to be rolled up (e.g. larvae and pupae) so there is 1 abundance value for Chaoborus per study/enclosure/date.
+
+2) Compare control data to calibration criteria for purpose of figuring out which experiment/enclosure is a good starting point for model initial parameters. These plots are for exploratory analysis only.
+
+**This script rolls up the taxon specific data to evaluate calibration criteria at the level of consenus group**
+I followed the methods outlined by Waterborne in the criteria_groups excel sheets, which are in the "Calibration documents from Waterborne" folder in the main R repo for this project.
+
+
+# History
+04/21/2021- L.Mudge creates script
+05/03/2021- L.Mudge adds plots to review indicator species
+09/02/2021- L.mudge revises timeseries plots to include a set with normalized abundance data
+09/22/2021- L.Mudge adds variables for total periphyton and total phytoplankton to the abundances by modeled groups df (requested by B.Sackmann). Moved plot code to a separate script.
+9/27/2021 - L.Mudge reruns/saves all tables to now include macrophytes (added inscript 01)
+9/28/2021 - L.Mudge updates `d.mod.int` with new interpolation methods.
+12/17/2021- L.Mudge moves all code related to Aquatox modeled groups into a separate script, 02a. This was done for clarity in the process, since this script had diverged into two different purposes. Re-ran all outputs and made sure saved to output folder that contained this script filename.
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(lubridate)
+library(RColorBrewer)
+library(imputeTS)
+
+```
+
+# Data
+Read in the mesocosm control data & compiled calibration criteria
+* For the intermediary datasets, we are interested in the critters considered for calibration (macroinverts, zooplankton, periphyton, and phytoplankton)
+
+```{r raw_data}
+
+## Control data: only groups considered for calibration criteria
+d <- read_csv("Output/01_Compile_Control_Data/control_data_for_calibration.csv")
+
+## Calibration criteria
+crit <- read.xlsx("R_Analyses/compiled_calibration_crit.xlsx",
+                  sheet = "calib_crit",
+                  detectDates = TRUE) %>%
+  rename(crit_min = min_value,
+         crit_max = max_value)
+
+#peak_dates <- crit %>% distinct(parameter_group, consensus_group, peak_date_start, peak_date_end)
+
+## Enclosure information
+encl <- read.csv('//pfs1w/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Mesocosm/GmbH_Mesocosm_Specifications.csv')
+
+
+```
+
+# 1. Sum abundances for taxa with multiple life stages - by study/enclosure, parameter_group, consensus_group, DATE
+
+* Macroinverts - Chaoborus, Chironomidae, Tanypodinae
+* Zooplankton - Diaptomidae & Cyclopidae (predatory copepods)
+
+4/28/2021- fixed selection of Cyclopidae (had 2 spellings) - LM
+
+```{r sum_life_stages}
+# rename variables so diff life stages have the same name
+# group by study, encl, param group, cons grp, var, date 
+# mutate, new_val = sum(val) -- check: life stage species should still have 2 rows, see summed value; non-life stage groups new_val=Val
+# then use distinct on grouping vars
+
+d.sum <- d %>%
+  mutate(variable = case_when(
+         grepl("Chaoborus", variable) ~ "Chaoborus sp.",
+         grepl("Chironomidae", variable) ~ "Chironomidae",
+         grepl("Tanypodinae", variable) ~ "Tanypodinae",
+         grepl("Diaptomidae", variable) ~ "Diaptomidae",
+         grepl("Cyclopoidae", variable) ~ "Cyclopoidae", 
+         grepl("Cyclopidae", variable) ~ "Cyclopoidae",
+         TRUE ~ variable)) %>%
+  group_by(study, enclosure, parameter_group, consensus_group, variable, date) %>%
+  mutate(abund_sum_lifestage = sum(value)) %>%
+  ungroup() %>%
+  distinct(study, enclosure, parameter_group, consensus_group, variable, date, .keep_all = TRUE) %>%
+  dplyr::select(-value)
+
+#write_csv(d.sum, "Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.csv")
+#saveRDS(d.sum, "Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds")
+ 
+```
+
+# 2. Calculate average value of taxon (variable) abundance per STUDY and day
+i.e. the average is across enclosures
+-group by study, parameter group, consensus group, variable, date
+-this is how Waterborne rolled up the taxa groups
+```{r average_across_enclosures}
+d.avg <- d.sum %>%
+  group_by(study, parameter_group, consensus_group, variable, date) %>%
+  mutate(mean_abund = round(mean(abund_sum_lifestage), 2)) %>%
+  ungroup() %>%
+  distinct(study, parameter_group, units_or_id, date, date2, peak_date_start, peak_date_end, consensus_group, variable, mean_abund, .keep_all=TRUE) %>%
+  dplyr::select(-abund_sum_lifestage, -enclosure)
+
+#write_csv(d.avg, "Output/02_Control_and_Calib_byGroup/avg_across_enclosure_bySpecies.csv")
+#saveRDS(d.avg, "Output/02_Control_and_Calib_byGroup/avg_across_enclosure_bySpecies.rds")
+```
+
+
+# 3. Calculate abundance for each consensus group
+* Here we are summing the individual taxa abundances
+* To follow Waterborne methods: Group by study, parameter group, date, and consenus group
+* Need these data frames to compare control data to the calibration criteria
+
+*Create 2nd df (d.groupE), that retains individual enclosures (ie combine step 1 and 3 only)
+```{r abund_per_group}
+  # By groups across study, does not retain enclosure:
+d.group <- d.avg %>%
+  group_by(study, parameter_group, consensus_group, date) %>%
+  mutate(grp_sum = sum(mean_abund)) %>%
+  ungroup() %>%
+  distinct(study, parameter_group, units_or_id, date, date2, peak_date_start, peak_date_end, consensus_group, grp_sum, .keep_all=TRUE) %>%
+  dplyr::select(-mean_abund, -variable)
+
+#write_csv(d.group, "Output/02_Control_and_Calib_byGroup/total_abund_byConsensusGroup_study.csv")
+#saveRDS(d.group, "Output/02_Control_and_Calib_byGroup/total_abund_byConsensusGroup_study.rds")
+
+# Make the same dataframe as above, but skip the step where we average all the enclosures-- request from Brandon & Damian to see timeseries by enclosure
+d.groupE <- d.sum %>%
+  group_by(study, enclosure, parameter_group, consensus_group, date) %>%
+  mutate(grp_sum = sum(abund_sum_lifestage)) %>%
+  ungroup() %>%
+  distinct(study, enclosure, parameter_group, units_or_id, date, date2, peak_date_start, peak_date_end, consensus_group, grp_sum, .keep_all=TRUE) %>%
+  dplyr::select(-abund_sum_lifestage, -variable)
+
+#write_csv(d.groupE, "Output/02_Control_and_Calib_byGroup/total_abund_byConsensusGroup_Enclosure.csv")
+#saveRDS(d.groupE, "Output/02_Control_and_Calib_byGroup/total_abund_byConsensusGroup_Enclosure.rds")
+```
+
+
+# Calibration Scores - by Group & Enclosure
+* Use calibration criteria to rank the studies/enclosures based on the consensus grouping (start with d.groupE)
+* IF has_date_criteria = TRUE, then that row (group_) has 4 criteria to meet, else has 2
+```{r get_peak_data, eval=FALSE}
+
+get_peak_data <- d.groupE %>% #pd %>%
+  group_by(study, enclosure, parameter_group, consensus_group, units_or_id) %>%
+  mutate(has_date_criteria = ifelse(!is.na(peak_date_start), TRUE, FALSE),
+         in_peak_window = ifelse(date2 >= peak_date_start & date2 <= peak_date_end, TRUE, FALSE),
+         peak_value = ifelse(max(grp_sum) >0, max(grp_sum), NA), 
+         peak_date = if_else(grp_sum==peak_value & !is.na(peak_date_start), date2, NULL),
+         valid_peak_date = ifelse(peak_date >= peak_date_start & peak_date <= peak_date_end, TRUE, FALSE),
+         num_peak_dates = n_distinct(peak_date, na.rm=TRUE),
+         num_valid_peak_date = sum(valid_peak_date==TRUE, na.rm=TRUE),
+         has_valid_peak_date = ifelse(num_valid_peak_date > 0 , TRUE, FALSE),
+         is_peak_value = ifelse(grp_sum==peak_value, TRUE, FALSE),
+         was_present = ifelse(max(grp_sum)>0, TRUE, FALSE)) %>%
+  ungroup() %>%
+  group_by(study, enclosure, parameter_group, consensus_group, units_or_id, is_peak_value) %>%
+  mutate(np_min = ifelse(is_peak_value == FALSE, min(grp_sum), NA),
+         np_max = ifelse(is_peak_value == FALSE, max(grp_sum), NA)) %>%
+  ungroup() %>%
+  group_by(study, enclosure, parameter_group, consensus_group, units_or_id) %>%
+  fill(np_min, np_max, .direction = "downup") %>% 
+  ungroup() %>%
+  mutate(has_valid_peak_date = ifelse(is.na(peak_date_start), NA, has_valid_peak_date)) %>% #so can distinguish btwn species that even have a date we're comparing to
+  distinct(study, enclosure, parameter_group, consensus_group, consensus_group, units_or_id, was_present, has_date_criteria, has_valid_peak_date, peak_value, np_min, np_max)
+
+# Add criteria values to peak data frame:
+add.crit <- crit %>% distinct(parameter_group, consensus_group, .keep_all=TRUE) %>% dplyr::select(-variable, -units)
+
+# Rank enclosures / studies based on criteria met
+eval <- left_join(get_peak_data, add.crit) %>%
+  mutate(meet_peak_abund = ifelse(peak_value >= min_peak_abund & peak_value <=max_peak_abund, TRUE, FALSE),
+         meet_crit_min = ifelse(np_min >= crit_min & np_min <=crit_max, TRUE, FALSE),
+         meet_crit_max = ifelse(np_max <= crit_max, TRUE, FALSE),
+         num_crit = ifelse(has_date_criteria == TRUE, 4, 2)) %>%
+  mutate(n_crit_met = rowSums(dplyr::select(.,has_valid_peak_date, meet_peak_abund, meet_crit_min, meet_crit_max), na.rm=TRUE)) #works when separate
+
+
+criteria_per_encl <- eval %>%
+  group_by(study, enclosure) %>%
+  summarize(
+    tot_crit_had = sum(num_crit),
+    tot_crit_met = sum(n_crit_met)) %>%
+  ungroup() %>%
+  mutate(crit_met_ratio = round((tot_crit_met/tot_crit_had*100), 1)) %>%
+  arrange(desc(crit_met_ratio))
+#write_csv(criteria_per_encl, "Output/02_Control_and_Calib_byGroup/Summary_calib_criteria_met_by_enclosure.csv")
+
+ 
+
+```
+
+## Calibration criteria by consensus group & study
+* Follow Waterborne methods
+* Uses the d.avg data frame, which takes the average of all enclosure abundances
+```{r calib_group_study}
+
+# Get peak dates from the calibration criteria and add to subsetted data:
+peak_dates <- crit %>% distinct(parameter_group, consensus_group, peak_date_start, peak_date_end)
+
+# No real year for criteria dates (set to 2021, criteria applicable across years), so create date col with year set to 2021
+pd <- d.group  %>%
+  mutate(true_year = lubridate::year(date),
+         date2 = date)
+         
+  
+lubridate::year(pd$date2) <- 2021
+
+pd <- left_join(pd, peak_dates) %>% arrange(parameter_group, consensus_group)
+
+
+get_peak_data <- pd %>%
+  group_by(study, parameter_group, consensus_group, units_or_id) %>%
+  mutate(has_date_criteria = ifelse(!is.na(peak_date_start), TRUE, FALSE),
+         in_peak_window = ifelse(date2 >= peak_date_start & date2 <= peak_date_end, TRUE, FALSE),
+         peak_value = ifelse(max(grp_sum) >0, max(grp_sum), NA), 
+         peak_date = if_else(grp_sum==peak_value & !is.na(peak_date_start), date2, NULL),
+         valid_peak_date = ifelse(peak_date >= peak_date_start & peak_date <= peak_date_end, TRUE, FALSE),
+         num_peak_dates = n_distinct(peak_date, na.rm=TRUE),
+         num_valid_peak_date = sum(valid_peak_date==TRUE, na.rm=TRUE),
+         has_valid_peak_date = ifelse(num_valid_peak_date > 0 , TRUE, FALSE),
+         is_peak_value = ifelse(grp_sum==peak_value, TRUE, FALSE),
+         was_present = ifelse(max(grp_sum)>0, TRUE, FALSE)) %>%
+  ungroup() %>%
+  group_by(study, parameter_group, consensus_group, units_or_id, is_peak_value) %>%
+  mutate(np_min = ifelse(is_peak_value == FALSE, min(grp_sum), NA),
+         np_max = ifelse(is_peak_value == FALSE, max(grp_sum), NA)) %>%
+  ungroup() %>%
+  group_by(study, parameter_group, consensus_group, units_or_id) %>%
+  fill(np_min, np_max, .direction = "downup") %>% 
+  ungroup() %>%
+  mutate(has_valid_peak_date = ifelse(is.na(peak_date_start), NA, has_valid_peak_date)) %>% #so can distinguish btwn species that even have a date we're comparing to
+  distinct(study, parameter_group, consensus_group, consensus_group, units_or_id, was_present, has_date_criteria, has_valid_peak_date, peak_value, np_min, np_max)
+
+# Add criteria values to peak data frame:
+add.crit <- crit %>% distinct(parameter_group, consensus_group, .keep_all=TRUE) %>% dplyr::select(-variable, -units)
+
+# Rank enclosures / studies based on criteria met
+eval <- left_join(get_peak_data, add.crit) %>%
+  mutate(meet_peak_abund = ifelse(peak_value >= min_peak_abund & peak_value <=max_peak_abund, TRUE, FALSE),
+         meet_crit_min = ifelse(np_min >= crit_min & np_min <=crit_max, TRUE, FALSE),
+         meet_crit_max = ifelse(np_max <= crit_max, TRUE, FALSE),
+         num_crit = ifelse(has_date_criteria == TRUE, 4, 2)) %>%
+  mutate(n_crit_met = rowSums(dplyr::select(.,has_valid_peak_date, meet_peak_abund, meet_crit_min, meet_crit_max), na.rm=TRUE)) #works when separate
+
+# criteria per study
+criteria_per_study <- eval %>%
+  group_by(study) %>%
+  summarize(
+    tot_crit_had = sum(num_crit),
+    tot_crit_met = sum(n_crit_met)) %>%
+  ungroup() %>%
+  mutate(crit_met_ratio = round((tot_crit_met/tot_crit_had*100), 1)) %>%
+  arrange(desc(crit_met_ratio))
+criteria_per_study
+
+#write_csv(criteria_per_encl, "Output/02_Control_and_Calib_byGroup/Summary_calib_criteria_met_by_study.csv")
+
+```
+

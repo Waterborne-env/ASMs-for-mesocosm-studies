@@ -1,0 +1,858 @@
+---
+title: "Effects Calibration Results & Reporting"
+author: "A. Lindborg & L.Mudge"
+date: "04/18/2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+From Waterborne: 
+- Set of two plots
+  - The first plot should show only the simulated abundances in control and treatment
+  - The second plot should show only the simulated effect sizes and the MDD. 
+- Tables showing the effect sizes
+
+
+# History
+06/15/2022 - Create initial plots     A. Lindborg
+07/18/2022 - Update plots to reflect request from Waterborne (above)    A. Lindborg
+08/15/2022 - Fix plotting errors (aestetics) for both average & MDD plots  -L.Mudge
+08/24/2022 - QA & rerunning with most recent results from D.Dawson - L.Mudge
+08/26/2022 - Script adapted to include calculation of mean error & reporting for Waterborne Tables. -LMudge
+08/31/2022 - Script modified to include results for no-effects species - L.Mudge
+09/01/2022 - Updated with final run of highest treatment level simulation results (effects sp only). -L.Mudge
+09/07/2022 - Updating to include assessment and plots of "no effects" species and lower treatment levels -L.MUDGE
+09/22/2022 - Added Macrophytes. -L.Mudge
+10/06/2022 - Update and rerun with final calibration model (FinalMod2_100201) - L.Mudge
+11/28/2022-  Create a 'theme_big' to apply larger text size for abstract figures - L.Mudge
+04/18/2023 - Modify script for 2021 validation 
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(openxlsx)
+library(ggpubr)
+library(here)
+
+theme <- theme(text = element_text(family = "sans")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.text = element_text(color="black", size=8),
+        legend.background = element_rect( size=.5, linetype= "solid", color = "black")) +
+  theme(panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black", size= 1)) +
+  theme(axis.text.x = element_text(color="black", size=8, vjust=0.5, angle=0)) +
+  theme(axis.text.y = element_text(color="black", size=8, vjust=0.5, angle=0)) +
+  theme(axis.title.x = element_text(color="black", size=9, face="bold")) +
+  theme(axis.title.y = element_text(color="black", size=9, face="bold")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, face="bold")) +
+  theme(axis.ticks = element_line(size = 1)) +
+  theme(axis.line = element_line(size = 1)) +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(panel.border = element_rect(fill = NA, size = 0.25)) +
+  theme(strip.text = element_text(face="bold", size = 9)) +
+  theme(plot.margin = unit(c(0.5,0.5,.5,0.5), "cm"))
+
+
+theme_big <- theme(text = element_text(family = "sans")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.text = element_text(color="black", size=12),
+        legend.background = element_rect( size=.5, linetype= "solid", color = "black")) +
+  theme(panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black", size= 1)) +
+  theme(axis.text.x = element_text(color="black", size=12, vjust=0.5, angle=0)) +
+  theme(axis.text.y = element_text(color="black", size=12, vjust=0.5, angle=0)) +
+  theme(axis.title.x = element_text(color="black", size=13, face="bold")) +
+  theme(axis.title.y = element_text(color="black", size=13, face="bold")) +
+  theme(plot.title = element_text(size = 14, hjust = 0.5, face="bold")) +
+  theme(axis.ticks = element_line(size = 1)) +
+  theme(axis.line = element_line(size = 1)) +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(panel.border = element_rect(fill = NA, size = 0.25)) +
+  theme(strip.text = element_text(face="bold", size = 13)) +
+  theme(plot.margin = unit(c(0.5,0.5,.5,0.5), "cm"))
+
+
+options(scipen = 9999)
+
+results_folder <- here("01_Aquatox_Results_Validation_Effects", "FinalModel_2021")
+```
+
+# Data
+* Sample dates, MDD, and calibration criteria all from Waterborne, used for filtering data
+```{r import_clean_data}
+# sampling dates:
+sd <- read.xlsx("\\\\integral-corp.com/data/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Effect Criteria/2021 Validation/AZT-effect-criteria-tables-Jan2023-2Appl.xlsx", 
+                sheet = "SampleDates_LM", colNames=FALSE, detectDates= TRUE) %>% 
+  pivot_longer(cols = X2:X27, names_to = "blank", values_to="date") %>%
+  rename(parameter_group = X1) %>%
+  dplyr::select(-blank) %>%
+  drop_na() %>%
+  mutate(date = as.POSIXct(date, format = "%Y-%m-%d")) %>%
+  group_by(parameter_group)
+
+## Load criteria data for filtering perturbed data & adding reference info (parameter & consensus groups)
+crit <- read_csv(here("01_Aquatox_Results_Validation_Effects", "Input", "Calibration_Criteria_in_Biomass.csv"))  %>%
+  mutate(aq_record = ifelse(is.na(aq_record), consensus_group, aq_record)) %>% # No AQ records for total perio or total phyto- so fill in
+  add_row(parameter_group = "Macroinvertebrates", consensus_group = "Odonata", aq_record = "Total Odonata", units_for_aquatox = "g/m2 dry",
+          crit_biomass_min = .$crit_biomass_min[.$aq_record == "Dragonfly_Meso (g/m2 dry)"], 
+          crit_biomass_max = .$crit_biomass_max[.$aq_record == "Dragonfly_Meso (g/m2 dry)"],
+          .after = 10)
+
+
+## add mdd data
+mdd <- read_xlsx("\\\\integral-corp.com/data/C2000-C3999/C3143_Mesocosm_Waterborne/Data/Effect Criteria/MDD/MDD_Input.xlsx", sheet = 2)
+mdd$date <- as.Date(mdd$date, format = "%m/%d/%Y") #fix date
+#change date so that it matches 2021 data rather than 2019
+mdd$date2 <- mdd$date
+year(mdd$date2) <- 2021
+
+
+## List of species with observed effects in Mesocosm studies: these are the Aquatox Record names, to use for filtering:
+critters <- c("Phyto Diatom_Meso (mg/L dry)",
+              "Phyto Crypto_Meso (mg/L dry)", 
+              "Cyclopidae_Meso (mg/L dry)", 
+              "Keratella_Meso (mg/L dry)",
+              "CladoceranSmall_Meso (mg/L dry)",
+              "Daphnidae_Meso (mg/L dry)")
+
+## Observed effects -- all species & all treatment levels
+#all.obs.eff <- read_csv(here("Output", "14_Observed_Effect_Size_Tables", "Observed_Effect_Sizes_all_treatments_and_groups.csv"))
+
+```
+
+
+```{r simulated_effects_data}
+files <- list.files(path = results_folder,
+                    pattern = "*.xls",
+                    full.names = TRUE)
+
+set_col_types <- c("date", "date", rep("numeric", times=49))
+
+### Format AQ model results
+aq.results <- tibble(filename = files) %>%
+  mutate(contents = map(filename, ~readxl::read_excel(.x, col_types = set_col_types))) %>%
+  unnest(cols=contents) %>%
+  dplyr::select(1:2, 19:47) %>% #Keep filename, date, and organism cols only
+  rename(date = `Date:`) %>%
+  extract(col = filename, into=c("filename", "treatment"), "(.*)_([^_]+).xls") %>%
+  mutate(
+    treatment = case_when(
+      treatment == "0.3ug" ~ "0.3 ug/L",
+      treatment == "10ug" ~ "10 ug/L",
+      treatment == "33ug" ~ "33 ug/L",
+      treatment == "C" ~ "Control"),
+    study = ifelse(grepl("2ApplS", filename), paste("2App"),
+                   ifelse(grepl("3PeakS", filename), paste("3Peak"),
+                          paste("Control")))) %>%
+  dplyr::select(-filename) %>%
+  pivot_longer(cols= -c(study, date, treatment),
+               names_to = "aq_record",
+               values_to = "model_result") %>%
+  mutate(year = lubridate::year(date)) %>%
+  mutate(date.obj = as.Date(date)) %>%
+  #filter(aq_record %in% unique(crit$aq_record)) %>%
+  #filter(date.obj >= exp.dates$min_date[match(year, exp.dates$year)] & date.obj <= exp.dates$max_date[match(year, exp.dates$year)]) %>%
+  arrange(aq_record) %>%
+  left_join(., crit%>%dplyr::select(parameter_group, consensus_group, aq_record)) %>%
+  mutate(parameter_group = replace_na(parameter_group, "Macrophytes"),
+         consensus_group = replace_na(consensus_group, "Macrophytes"))
+
+
+
+#write_csv(aq.results, "compiled_aquatox_results.csv")
+
+```
+
+
+# Calculate Effect Size of Simulation
+Equations from Waterborne, see word doc: AZT_effect_criteria_June_2022.docx
+
+%effect_sim= (Treatment - Control) * 100 / Control
+
+```{r calc_sim_effect_size}
+
+
+  # COMBINED ALL SIMULATED RESULTS & CALCULATE SIMULATED EFFECT SIZE #
+# aq.all <- inner_join(aq.results.control, aq.results.pert.final, by = c("Date", "aq_record", "year", "date.obj", "parameter_group", "consensus_group")) %>% rename(date = Date) %>%
+#     mutate(simulated_effect=((perturbed-control)/control)*100) #QA - switched numerator to match Waterborne equation  LM
+
+
+#make control results their own dataframe 
+d.control <- aq.results %>%
+  filter(study == "Control") %>%
+  pivot_wider(names_from =treatment, values_from = model_result) %>%
+  select(-study)
+
+
+# UPDATED 9/2 WITH RESULTS FOR ALL TREATMENT LEVELS
+aq.all <- aq.results %>%
+  pivot_wider(names_from =treatment, values_from = model_result) %>%
+  select(-Control) %>%
+  filter(study != "Control")
+
+#recombine control and treatment data
+aq.all <- left_join(aq.all, d.control, by = c("date", "aq_record", "year", "date.obj", "parameter_group", "consensus_group"))
+
+aq.all <- aq.all %>%
+  mutate(across(.cols = c(`10 ug/L`:`0.3 ug/L`), 
+                .fns = list(effect_size = ~((.x-Control)/Control)*100), 
+                .names="{.col}_{.fn}"))
+
+
+
+treatment_key <- data.frame(
+  treat.num = c(1,2,3,4,5,6),
+  treat.name = c("Control", "0.3 ug/L", "1 ug/L", "3 ug/L", "10 ug/L", "33 ug/L" )
+)
+
+# Get just the effect sizes for each of the treatment levels -- use this for plotting
+eff_size <- aq.all %>%
+  dplyr::select(-c(`10 ug/L`:Control)) %>%
+  pivot_longer(cols = c(`10 ug/L_effect_size`:`0.3 ug/L_effect_size`), names_to = "treat.name", values_to = "simulated_effect") %>%
+  mutate(treat.name = str_remove_all(treat.name, "\\_effect\\_size")) %>%
+  #filter(!treat.name %in% "33 ug/L") %>%
+  left_join(., treatment_key) %>%
+  rename(treatment = treat.num)
+  
+  
+```
+
+
+
+# EVALUATION OF SPEICES WITH TREATMENT RELATED EFFECTS
+* This section produces the plots & tabular results (sim effect size, mean error) requested by Waterborne
+
+## TABLES
+* Creates unformatted criteria tables with sample dates and simulated effect sizes. Setup in a way to copy/paste the simualted effect directly into the Excel workbook for waterborne 
+```{r report_tables}
+tab <- aq.all %>%
+  filter(date %in% sd$date) %>%
+  dplyr::select(c(study, date, aq_record, parameter_group, consensus_group, `33 ug/L_effect_size`)) %>%
+  rename(simulated_effect= `33 ug/L_effect_size`) %>%
+  # Reformat
+  #dplyr::select(c(date, aq_record, day, MDD_max, observed_effect, parameter_group, consensus_group, simulated_effect, mean_error)) %>%
+  arrange(date) %>%
+  pivot_longer(cols = c(simulated_effect), names_to = "variable") %>%
+  mutate(value=signif(value, 3)) %>%
+  nest(data=c(study, consensus_group, aq_record,date, variable, value)) %>%
+  mutate(data = map(data, ~.x %>% pivot_wider(names_from = "date"))) %>%
+  pwalk(~write_csv(x=.y, file = paste0("01_Aquatox_Results_Validation_Effects/Output/Integral_CriteriaTables_",.x, "_", Sys.Date(), ".csv"))) #creates 1 csv per nested df
+
+  
+
+
+```
+
+
+## PLOTS 
+Final plots per Waterborne specifications above. 
+*switch +theme or +theme_big depending on what text size you want printed.
+```{r report_plots_final}
+
+min_date <- as.Date("2021-06-01")
+max_date <- as.Date("2021-09-10")
+
+
+
+## 2 APP
+#subset application and peak data (the plots for these are different, app needs MDD and peak does not)
+aq.app <- aq.all %>%
+  filter(study == "2App" & aq_record %in% critters)
+
+
+pdf(paste0(here("01_Aquatox_Results_Validation_Effects", "Output", "Integral_Sp_Effects_Plots_2App_"), Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(aq.app$parameter_group)){
+  ad <- aq.app %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(ad$aq_record)){
+  
+  #get aquatox data
+    #ad <- pd %>% filter(aq_record == j)
+  # ad <- aq.all %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  # 
+  # # get measured data
+  # mt <- d.measured %>% filter(aq_record ==j, treatment==6)
+  # mc <- d.measured %>% filter(aq_record ==j, treatment ==1)
+  
+  #get mdd data
+  md <- mdd %>% filter(aq_record == j)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ad <- aq.app %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_path(data = ad, aes(x = date.obj, y = `33 ug/L`, color = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_path(data = ad, aes(x = date.obj, y = Control, color = "Simulated control")) + #simulated control
+    
+ 
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+     scale_color_manual(values = c("Simulated treatment" = "red", "Simulated control" = "green4")) +
+    # scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Study: 2App\nParameter Group: ", i, "\nConsensus Group: ", unique(ad$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: Highest Dose (33 ug/l)")) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+
+  p2 <- ggplot() +
+     geom_point(data = ad, aes(x=date.obj, y = `33 ug/L_effect_size`, color= "Simulated Effect")) + 
+    # geom_point(data = md, aes(x = date, y = observed_effect, colour = effect_outcome)) + #Two outcomes = Effect or No
+     geom_ribbon(data = md, aes(x= date2, ymin = MDD_min, ymax = MDD_max, fill = "grey65"),  alpha = 0.2) +
+     
+     #POINTS legend: Ggplot assigns color based on alpha order of aes variable= Effect, No Effect, Simulated Effect
+     scale_colour_manual(values = c("lightblue3"),  
+                      labels = c("Simulated Effect Size")) + 
+     
+     #FILL legend
+     scale_fill_manual("", label = "%MDD",values="grey65") +
+     
+     #Axes/Labels
+     scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+     labs(x= "", y= paste0("Percent"), 
+          title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ad$consensus_group), "\nAQUATOX record: ", j)) +
+     theme +
+     theme(plot.title = element_blank(),
+           legend.title = element_blank(),
+           axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+  print(ggarrange(p1, p2,
+          ncol = 1, nrow = 2))
+  }
+}
+
+
+dev.off()
+
+### 3PEAK
+
+aq.peak <- aq.all %>%
+  filter(study == "3Peak" & aq_record %in% critters)
+
+
+pdf(paste0(here("01_Aquatox_Results_Validation_Effects", "Output", "Integral_Sp_Effects_Plots_3Peak_"), Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(aq.peak$parameter_group)){
+  ad <- aq.peak %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(ad$aq_record)){
+  
+  #get aquatox data
+    #ad <- pd %>% filter(aq_record == j)
+  # ad <- aq.all %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  # 
+  # # get measured data
+  # mt <- d.measured %>% filter(aq_record ==j, treatment==6)
+  # mc <- d.measured %>% filter(aq_record ==j, treatment ==1)
+
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ad <- aq.peak %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_path(data = ad, aes(x = date.obj, y = `33 ug/L`, color = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_path(data = ad, aes(x = date.obj, y = Control, color = "Simulated control")) + #simulated control
+    
+ 
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+     scale_color_manual(values = c("Simulated treatment" = "red", "Simulated control" = "green4")) +
+    # scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Study: 3Peak\nParameter Group: ", i, "\nConsensus Group: ", unique(ad$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: Highest Dose (33 ug/l)")) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+
+  p2 <- ggplot() +
+     geom_point(data = ad, aes(x=date.obj, y = `33 ug/L_effect_size`, color= "Simulated Effect")) + 
+     
+     #POINTS legend: Ggplot assigns color based on alpha order of aes variable= Effect, No Effect, Simulated Effect
+     scale_colour_manual(values = c("lightblue3"),  
+                      labels = c("Simulated Effect Size")) + 
+     
+     #Axes/Labels
+     scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+     labs(x= "", y= paste0("Percent"), 
+          title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ad$consensus_group), "\nAQUATOX record: ", j)) +
+     theme +
+     theme(plot.title = element_blank(),
+           legend.title = element_blank(),
+           axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+  print(ggarrange(p1, p2,
+          ncol = 1, nrow = 2))
+  }
+}
+
+
+dev.off()
+
+```
+
+```{r plots_SETAC_abstract_Fig2}
+
+# Combine the observed and simulated effects for plotting:
+abs_grps <- c("Copepoda_predatory", "Daphnidae", "Rotifera_herbivorous2")
+
+d.abs <- p.effects %>% 
+  filter(consensus_group %in% abs_grps) %>%
+  mutate(consensus_groupF =factor(consensus_group, levels=c("Copepoda_predatory", "Daphnidae", "Rotifera_herbivorous2"), ordered=TRUE))
+
+min_date <- as.Date("2019-06-01")
+max_date <- as.Date("2019-09-06")
+
+pdf(paste0(here("01_Aquatox_Results_Calibration_Effects", "Output", "SETAC_Fig2"), Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(d.abs$parameter_group)){
+  pd <- d.abs %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(pd$aq_record)){
+  
+  #get aquatox data
+    #ad <- pd %>% filter(aq_record == j)
+  ad <- aq.all %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  
+  # get measured data
+  mt <- d.measured %>% filter(aq_record ==j, treatment==6)
+  mc <- d.measured %>% filter(aq_record ==j, treatment ==1)
+  
+  #get mdd data
+  md <- mdd %>% filter(aq_record == j)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ed <- d.abs %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = mt, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = mt, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date.obj, y = `33 ug/L`, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = mc, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = mc, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date.obj, y = Control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Consensus Group: ", unique(ed$consensus_group), "\n ")) +
+    theme_big +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+  print(p1)
+  }
+}
+
+
+dev.off()
+
+```
+
+
+```{r report_plots_original}
+
+##create subsets for treatment groups and species 
+d.effects.treatment6 <- d.measured %>%
+  filter(treatment == 6) %>%
+  mutate(treatment = case_when(
+    treatment == "6" ~ "Highest Dose (33 ug/L)")) %>%
+  filter(aq_record %in% critters)
+
+d.control <- d.measured %>%
+  filter(treatment == 1) %>%
+  mutate(treatment = case_when(
+      treatment == "1" ~ "Control")) %>%
+  filter(aq_record %in% critters)
+
+aq.filt <- aq.all %>%
+  filter(aq_record %in% critters) #%>%
+  #rename(date = date.obj)
+
+# Set min and max dates for X-axis, as requested by B.Sackmann:
+min_date <- as.Date("2019-06-01")
+max_date <- as.Date("2019-09-06")
+
+pdf(paste0("01_Aquatox_Results_Calibration_Effects/Output/Integral_Sp_Effects_Plots_", Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(aq.filt$parameter_group)){
+  pd <- aq.filt %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(pd$aq_record)){
+  
+  #add aquatox data
+  ad <- pd %>% filter(aq_record == j)
+  
+  #add mdd data
+  md <- mdd %>% filter(aq_record == j)
+  
+   ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  
+  #add control data
+  cd <- d.control %>% filter(aq_record == j)
+  
+  units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = ed, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = ed, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date, y = perturbed, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = cd, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = cd, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date, y = control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", j)) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+  
+  
+   #MDD PLOTS
+   p2 <- ggplot() +
+     geom_point(data = ad, aes(x=date, y = simulated_effect, colour = "Simulated Effect")) + 
+     geom_point(data = md, aes(x = date, y = observed_effect, colour = effect_outcome)) + #Two outcomes = Effect or No
+     geom_ribbon(data = md, aes(x= date, ymin = MDD_min, ymax = MDD_max, fill = "grey65"),  alpha = 0.2) +
+     
+     #POINTS legend: Ggplot assigns color based on alpha order of aes variable= Effect, No Effect, Simulated Effect
+     scale_colour_manual(values = c("red", "black", "lightblue3"),  
+                      labels = c("Measured With Effect", "Measured Without Effect", "Simulated Effect Size")) + 
+     
+     #FILL legend
+     scale_fill_manual("", label = "%MDD",values="grey65") +
+     
+     #Axes/Labels
+     scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+     labs(x= "", y= paste0("Percent"), 
+          title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ad$consensus_group), "\nAQUATOX record: ", j)) +
+     theme +
+     theme(plot.title = element_blank(),
+           legend.title = element_blank(),
+           axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+   
+print(ggarrange(p1, p2,
+          ncol = 1, nrow = 2))
+ 
+  }
+}
+
+dev.off()
+
+
+# FOR PLOT TESTING:
+#i <- "Zooplankton"
+#j <- "CladoceranSmall_Meso (mg/L dry)"
+#ggplotly(p1) # use plotly to verify that what is labeled as simulated/measured and control/treatment actually match the data!
+#ggplotply(p2)
+
+```
+
+
+
+# EVALUATION OF SPECIES WITHOUT TREATMENT RELATED EFFECTS 
+* Simulations need to be evaluated for relative effect sizes across all treatment levels
+
+## Were simulated effects <20% & what is the occurrence of >= 20% simulated effects?
+* IF model results show effects >=20% for more than 1 sampling data, need to discuss
+
+```{r no_effects_sp_occurrence}
+
+# Q: Were simulated effects < 20%?
+no_eff <- d.measured.wEffects %>%
+  distinct(date, aq_record, treatment, observed_effect) %>% # get sampling dates we are comparing too
+  filter(!grepl("Total", aq_record), !is.na(aq_record), !aq_record %in% critters, treatment %in% c(2:6)) %>% # filter to end up with only no-effect species for all treatments 
+  left_join(., eff_size) %>% #join aq data to measured, that way will only keep the experiment sampling dates
+  mutate(effect_less20 = ifelse(abs(simulated_effect)<20, TRUE, FALSE))
+
+# Calculate occurrence of >=20% simulated effects:
+effect_more20 <- no_eff %>%
+  group_by(aq_record, treatment) %>%
+  count(effect_less20)
+
+to_explain <- effect_more20 %>%
+  filter(effect_less20 ==FALSE & n >1) %>%
+  left_join(., treatment_key%>%rename(treatment=treat.num))
+
+write_csv(to_explain, here("01_Aquatox_Results_Calibration_Effects", "Output", "LowerTreatmentSpGreater20.csv"))
+```
+
+## NO EFFECTS PLOTS
+
+1) For all "no-effects" species, need to plot observed and simulated effects over time for highest treatment level (33 ug/L). Where relative effect sizes are >=20% in simulation, effects should be identified in the plots
+
+
+```{r plots_no_effect_sp_33ug}
+
+p.noeff <- no_eff %>% 
+  filter(treatment==6) %>%
+  dplyr::select(treatment, date, aq_record, observed_effect, parameter_group, consensus_group, simulated_effect, effect_less20) %>%
+  pivot_longer(cols = c(observed_effect, simulated_effect), names_to = "effect_type", values_to="effect_size") %>%
+  mutate(date = as.Date(date))
+
+min_date <- as.Date("2019-06-01")
+max_date <- as.Date("2019-09-06")
+
+pdf(paste0(here("01_Aquatox_Results_Calibration_Effects", "Output", "Integral_No_Effects_Sp_33ug"), Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(p.noeff$parameter_group)){
+  pd <- p.noeff %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(pd$aq_record)){
+  
+  #add aquatox data
+    #ad <- pd %>% filter(aq_record == j)
+  ad <- aq.all %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  
+  # measured data
+  mt <- d.measured %>% filter(aq_record ==j, treatment==6)
+  mc <- d.measured %>% filter(aq_record ==j, treatment ==1)
+  #add mdd data
+  #md <- mdd %>% filter(aq_record == j)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ed <- p.noeff %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = mt, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = mt, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date.obj, y = `33 ug/L`, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = mc, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = mc, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date.obj, y = Control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: Highest Dose (33 ug/l)")) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+
+  p2 <- ggplot(data=ed) +
+    geom_point(aes(x=date, y=effect_size, color=effect_type)) + #, shape=effect_less20
+    geom_ribbon(aes(x=date,ymin = -20, ymax = 20, fill= "grey65"),  alpha = 0.1) +
+    scale_color_manual(values = c("green4", "red"), labels =c("Observed Effect", "Simulated Effect"), guide="legend") +
+    #scale_shape_manual(name = "Effect <20%?", values=c(16,8), guide="legend", drop=FALSE) +
+    labs(x="Date", 
+         y= "Effect Size"#,
+        #title = paste0("Parameter Group: ", unique(ed$parameter_group), "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", i, "\nTreatment: Highest Dose (33 ug/l)")
+        ) +
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_fill_manual("", label = "20% Effect Size \nThreshold",values="grey65") +
+    theme +
+    theme(axis.text.x = element_text(angle=90))
+  
+  print(ggarrange(p1, p2,
+          ncol = 1, nrow = 2))
+  }
+}
+  
+
+
+dev.off()
+
+
+```
+
+2) If relative effect sizes >=20% are simulated in lower treatment levels, provide plots of those effects (i.e. plots of species/trt level combos in "to_explain", other than highest trt level)
+ * QA check: no observations/measured data for herbivorous copepods? Should we make all records NA? (one date at -100%)
+ 
+ **VIP NOTE this code is imperfect: would need to modify if want to plot more than just the 10ug/l treatment level. Happened this way just because adding the top panel in at the last minute and would require some code reworking to facet by treatment level.Therefore, with any new results run, you need to CHECK the "to_explain" dataframe and see if there are any other treatment levels we need to visualize.-LM 9/22/2022**
+ 
+
+```{r no_effects_lower_trt_level}
+
+# Need to make sure only making plots for the treatment levels where we saw the >=20%
+pd.exp <- to_explain %>% dplyr::select(aq_record, treatment) %>%
+  inner_join(., no_eff) %>% 
+  filter(!treatment %in% c(1,6)) %>% # Remove control & highest treatment level
+  dplyr::select(treatment, date, aq_record, observed_effect, parameter_group, consensus_group, simulated_effect, effect_less20) %>%
+  pivot_longer(cols = c(observed_effect, simulated_effect), names_to = "effect_type", values_to="effect_size") %>%
+  left_join(., treatment_key %>% rename(treatment=treat.num)) %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(effect_size = ifelse(aq_record == "Calanoida_Meso (mg/L dry)" & effect_type == "observed_effect", NA, effect_size)) %>%
+  arrange(parameter_group, consensus_group, aq_record)
+
+
+
+min_date <- as.Date("2019-06-01")
+max_date <- as.Date("2019-09-06")
+
+pdf(paste0(here("01_Aquatox_Results_Calibration_Effects", "Output", "Integral_No_Effects_Sp_lower_trt_levels"), Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+for(j in unique(pd.exp$aq_record)){
+  
+    #add aquatox data
+    #ad <- pd %>% filter(aq_record == j)
+  ad <- aq.all %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  
+  # measured data
+  mt <- d.measured %>% filter(aq_record ==j, treatment ==5) #%>% mutate(treat.name == "10 ug/L") #Note: doing this for brevity, will not work in future if need to show other treatment levels
+  mc <- d.measured %>% filter(aq_record ==j, treatment ==1)
+  #add mdd data
+  #md <- mdd %>% filter(aq_record == j)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ed <- p.noeff %>% filter(aq_record ==j)
+
+    units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = mt, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = mt, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date.obj, y = `10 ug/L`, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = mc, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = mc, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date.obj, y = Control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Biomass ", units), 
+        title = paste0("Parameter Group: ", unique(ed$parameter_group), "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: ", unique(pd.exp$treat.name))) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+  
+  
+  d <- pd.exp %>% filter(aq_record == j)
+  p2 <- ggplot(data=d) +
+    geom_point(aes(x=date, y=effect_size, color=effect_type)) + #, shape=effect_less20
+    geom_ribbon(aes(x=date,ymin = -20, ymax = 20, fill = "grey65"),  alpha = 0.1) +
+    scale_color_manual(values = c("green4", "red"), labels =c("Observed Effect", "Simulated Effect"), guide="legend") +
+    #scale_shape_manual(name = "Effect <20%?", values=c(16,8), guide="legend", drop=FALSE) +
+    labs(x="Date", 
+         y= "Effect Size"#,
+       # title = paste0("Parameter Group: ", unique(d$parameter_group), "\nConsensus Group: ", unique(d$consensus_group), "\nAQUATOX record: ", j)
+        ) +
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_fill_manual("", label = "20% Effect Size \nThreshold",values="grey65") +
+    theme +
+    theme(axis.text.x = element_text(angle=90)) +
+    facet_wrap(~treat.name)
+    
+  print(ggarrange(p1, p2,
+          ncol = 1, nrow = 2))
+      
+
+}
+dev.off()
+
+
+#i <- "ChironomidOther_Meso (g/m2 dry)"
+
+# Save table of "to explain" species for quick reference list
+#tab_lower_trt <- to_explain %>%
+#  left_join(., no_eff%>% distinct(aq_record, consensus_group, parameter_group)) %>%
+#  filter(!treatment %in% c(1,6)) %>%
+#  relocate(parameter_group, consensus_group, .before=aq_record) %>%
+#  dplyr::select(-effect_less20) %>%
+#  mutate(treatment = case_when(
+#    treatment == 2 ~ "0.3 ug ai/L",
+#    treatment == 3 ~ "1 ug ai/L",
+#    treatment == 4 ~ "3 ug ai/L",
+#    treatment == 5 ~ "10 ug ai/L"
+#  )) %>%
+#  rename(`Parameter Group`=parameter_group,
+#         `Consensus Group`=consensus_group,
+#         `Aquatox Record` = aq_record,
+#         `Treatment Level` = treatment,
+#         `No. Sampling Dates Simulated Effect >=20%`= n)
+#openxlsx::write.xlsx(tab_lower_trt, "01_Aquatox_Results_Calibration_Effects/Output/Integral_Sim_effects_more20_lower_trt.xlsx")  
+  
+```
+

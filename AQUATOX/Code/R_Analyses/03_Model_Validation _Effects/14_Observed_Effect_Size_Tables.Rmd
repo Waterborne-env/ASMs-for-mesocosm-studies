@@ -1,0 +1,104 @@
+---
+title: "observed effect size verification"
+author: "A. Lindborg"
+date: "04/18/2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+This table calculates the observed effect size in percent -> [(perturbed-control)/control]*100 for the measured data and combines it with the modeled data observed effect sizes calculated in 12_Percent_DD_Plots.Rmd
+
+Effect size is the % difference between the measured effects and measured control data (already converted to biomass). 
+  
+  - The modeled effect size results will be used to fill in the Waterborne effects criteria tables 
+
+# History
+07/17/2022 - Create initial tables     A. Lindborg
+07/19/2022 - Update to include all species and modeled effect size results    A. Lindborg
+08/31/2022 - Updated to calculate observed effects for all treatment levels - L.Mudge (trt-control/control)
+04/18/2023 - Modify for 2021 data - A Lindborg
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(openxlsx)
+library(ggpubr)
+
+options(scipen = 999)
+
+
+##read in control and treatment measured data
+d.measured <- read_csv("01_Aquatox_Results_Calibration_Effects/Input/mesocosm_treatment_data.csv")
+```
+
+
+```{r import_clean_data}
+
+
+#Summarize to obtain one measurement for every unique critter and date to match how Waterborne plotted their data and calculated their effect sizes. Filter for only control and highest dose group 
+d.measured.calc <- d.measured %>%
+  group_by(treatment, aq_record, date) %>%
+  #mutate(biomass = mean(biomass))
+  mutate(mean = mean(biomass),
+            min = min(biomass),
+            max = max(biomass)) %>%
+  distinct(aq_record, date, .keep_all = TRUE) %>%
+  filter(treatment %in% c(1, 6))
+  
+
+#pivot data
+d.wide <- d.measured.calc %>%
+  select(treatment, day, parameter_group, date, consensus_group, aq_record, mean) %>%
+  pivot_wider(names_from = treatment, values_from = mean) %>%
+  rename(mean_measured_effect = `6`, mean_measured_control = `1`)
+
+
+#calculate observed effect size
+d.calc <- d.wide %>%
+  mutate(measured_effect_size = ((mean_measured_effect-mean_measured_control)/mean_measured_control)*100) #QA numerator switched to match WB equation-LM
+
+
+##read in observed effect size modeled data
+d.model <- read_csv("01_Aquatox_Results_Calibration_Effects/Output/model_observed_effect_size_2022-08-25.csv") 
+
+d.model.abr <- d.model %>%
+  select(Date, parameter_group, consensus_group, aq_record, control, perturbed, perc.dif) %>%
+  rename(date = Date, modeled_control = control, modeled_effect = perturbed, modeled_effect_size = perc.dif)
+
+
+#combine measured with modeled data
+d.final <- left_join(d.calc, d.model.abr, by = c("date", "parameter_group", "consensus_group", "aq_record"))
+```
+
+```{r output_table}
+#write output table
+write.xlsx(d.final, "Output/14_Observed_Effect_Size_Tables/Observed_Effect_Size_allgroups.xlsx")
+
+```
+
+
+# Added 8/31: Observed (mesocosm) effects for all treatment levels
+* does NOT include model results. These observed effects will be used in our plots for Waterborne
+```{r observed_effects_all_treatments}
+
+
+#Summarize to obtain one measurement for every unique critter and date to match how Waterborne plotted their data and calculated their effect sizes. Filter for only control and highest dose group 
+d.all.obs <- d.measured %>%
+  mutate(treatment = paste0("treatment_", treatment)) %>%
+  group_by(treatment, aq_record, date) %>%
+  mutate(mean = mean(biomass),
+            min = min(biomass),
+            max = max(biomass)) %>%
+  distinct(aq_record, date, .keep_all = TRUE) %>%
+  select(treatment, day, parameter_group, date, consensus_group, aq_record, mean) %>%
+  pivot_wider(names_from = treatment, values_from = mean) %>%
+  mutate(across(.cols=treatment_1:treatment_6, ~((.x-treatment_1)/treatment_1)*100))
+
+write_csv(d.all.obs, "Output/14_Observed_Effect_Size_Tables/Observed_Effect_Sizes_all_treatments_and_groups.csv")  
+
+```
+

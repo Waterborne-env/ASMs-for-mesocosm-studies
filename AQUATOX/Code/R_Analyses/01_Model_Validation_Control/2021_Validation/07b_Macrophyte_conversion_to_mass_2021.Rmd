@@ -1,0 +1,63 @@
+---
+title: "Convert Macrophyte Abundances to Biomass"
+author: "A. Lindborg"
+date: "11/30/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+Convert macrophyte control data from percent cover to grams/m2 for comparison to Aquatox results.
+
+
+# Documentation
+Per internal meeting on 12/14/21, B.Sackmann stated that set limit of macrophytes in Aquatox to 100 g/m2. Therefore, for this conversion, we will set the max % cover to 100 g/m2, so for each species it's really a 1:1 for percent cover to g/m2 (ie 60% = 60 g/m2)-12/15/21
+
+# History
+11/30/2022 - A. Lindborg creates script
+04/28/2023 - A. Lindborg updates to include full 2021 dataset
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+
+options(scipen = 9999)
+```
+
+# Data
+```{r data}
+
+d.meso <- readRDS("Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds") %>% 
+  filter(parameter_group == "Macrophytes") %>%
+  filter(variable == "Myriophyllum spicatum" | variable == "Chara globularis") %>%
+  dplyr::select(study:date2, abund_sum_lifestage)
+```
+
+# Conversion from % cover to grams/m2
+
+```{r conversion}
+#max_value = max(plants$abund_sum_lifestage) #114.4
+
+AQ_Macrophytes <- d.meso %>%
+  dplyr::select(-parameter_group, -consensus_group, -units_or_id) %>%
+  rename(species_group = variable,
+         group_abundance = abund_sum_lifestage) %>%
+  mutate(
+    #ratio = abund_sum_lifestage/max_value,
+    #mass_g_per_area = ratio * 100,
+    group_biomass = group_abundance,
+    units_for_aquatox = "g/m2 dry",
+    non_detects = 0, 
+    min_bar_value = group_biomass,
+    max_bar_value = group_biomass)
+
+write.csv(AQ_Macrophytes, paste0("Output/07_Biomass_Conversions/Aquatox_Macrophyte_Overlay_", Sys.Date(), ".csv"))
+
+
+```
+

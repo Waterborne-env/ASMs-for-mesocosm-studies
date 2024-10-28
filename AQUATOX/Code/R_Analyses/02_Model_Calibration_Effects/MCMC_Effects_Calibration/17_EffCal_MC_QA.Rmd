@@ -1,0 +1,469 @@
+---
+title: "Comparing Calibration Criteria from Monte Carlo Runs"
+author: "D. Dawson"
+date: "8/12/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+
+The purpose of this script to compare model simulations produced via the Uncertainty Analysis tool in Aquatox to calibration criteria information in order to create starting distributions for manual calibration. This script contains some elements of the following script by A. Lindborg: 12_Percent_MDD_Plots.Rmd   
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(openxlsx)
+library(ggpubr)
+
+```
+#These are the groups included in the Aquatox model.
+
+#NOte, these are the names in aquatox: 
+#[1] "Asellus_Meso (g/m2 dry)"         "Calanoida_Meso (mg/L dry)"       "Chaoborus_Meso (mg/L dry)"      
+#[4] "ChironomidOther_Meso (g/m2 dry)" "CladoceranPhyt_Meso (g/m2 dry)"  "CladoceranSmall_Meso (mg/L dry)"
+#[7] "Cloeon_Meso (g/m2 dry)"          "Cyclopidae_Meso (mg/L dry)"      "Damselfly_Meso (g/m2 dry)"      
+#[10] "Daphnidae_Meso (mg/L dry)"       "Dragonfly_Meso (g/m2 dry)"       "Gammarus_Meso (g/m2 dry)"       
+#[13] "Gastropoda_Meso (g/m2 dry)"      "Hirudinea_Meso (g/m2 dry)"       "Keratella_Meso (mg/L dry)"      
+#[16] "Notonecta_Meso (g/m2 dry)"       "Oligochaeta_Meso (g/m2 dry)"     "Peri Blue-Green_Meso (g/m2 dry)"
+#[19] "Peri Diatom_Meso (g/m2 dry)"     "Peri Greens_Meso (g/m2 dry)"     "Phyto BlueGreen_Meso (mg/L dry)"
+#[22] "Phyto Crypto_Meso (mg/L dry)"    "Phyto Diatom_Meso (mg/L dry)"    "Phyto Greens_Meso (mg/L dry)"   
+#[25] "RotiferBranch_Meso (mg/L dry)"   "Simocephalus_Meso (mg/L dry)"    "Tanypodinae_Meso (g/m2 dry)"  
+
+#We have to create total phytoplankton, total perplankton, and total odonata
+
+# Load criteria file to get aq_results labels
+```{r}
+# QA: 4140 | Check to see that this is the most updated calibration criteria in biomass file
+crit <- read_csv("Calibration_Criteria_in_Biomass.csv") %>%
+
+    mutate(aq_record = ifelse(is.na(aq_record), consensus_group, aq_record)) %>% # No AQ records for total perio or total; adding total Periphyton and total Phytoplankton
+  add_row(parameter_group = "Macroinvertebrates", consensus_group = "Odonata", aq_record = "Total Odonata", units_for_aquatox = "g/m2 dry",
+          crit_biomass_min = .$crit_biomass_min[.$aq_record == "Dragonfly_Meso (g/m2 dry)"], 
+          crit_biomass_max = .$crit_biomass_max[.$aq_record == "Dragonfly_Meso (g/m2 dry)"],
+          .after = 10)
+
+```
+
+
+
+# Load in control data from run of newest model iteration
+```{r}
+
+controlfile= "Calibration_Uncertainty_UM_TriMCv8_Control1.csv"
+    
+aq.results.control<-read_csv(controlfile)
+
+#Adding columns for aq.names= total Odonata, Periphyton, and Phytoplankton
+aq.results.control$'Total Odonata' = aq.results.control$`Damselfly_Meso (g/m2 dry)` + aq.results.control$`Dragonfly_Meso (g/m2 dry)` 
+aq.results.control=aq.results.control %>% 
+  rename('Total Periphyton'='Peri. Biomass (g/m2 dry)') %>%
+  rename('Total Phytoplankton' = 'Phyto. Biomass (mg/L dry)')
+
+
+   #Clean perturbed data to match aq.results.control format for plotting
+  aq.results.control$Date <- as.Date(aq.results.control$Date, format = "%m/%d/%Y") #fix date
+
+  aq.results.cont <- aq.results.control %>%
+    dplyr::select(-2) %>% #remove unnecessary columns #DD changed this here because my version of aquatox doesn't have the same formatting for names
+    #rename(Date = `Date:`) %>% #rename Date: column
+    pivot_longer(cols= -c(Date), #Pivot data to long format
+                 names_to = "aq_record",
+                 values_to = "model_result") %>%
+    mutate(year = lubridate::year(Date)) %>% #create year column
+    mutate(date.obj = as.Date(Date)) %>% #create data object column
+    left_join(., crit%>%dplyr::select(parameter_group, consensus_group, aq_record)) %>%
+    filter(aq_record %in% unique(crit$aq_record)) %>% #filter for only those groups that have column that corresponds to the aqrecords in criteria file
+    arrange(aq_record)
+
+  #Rename model_results as "Control"
+   aq.results.cont.final <- aq.results.cont %>%
+    rename(control = model_result)
+
+
+```
+
+# Load and clean effects data to compare against modeled effects
+```{r Load effects data }
+# QA: 3075 | Make sure that this is the most updated version of the Observed Effect Size file
+effectsall <- read_xlsx("Observed_Effect_Size_allgroups.xlsx")
+effectsall$date <- as.Date(effectsall$date, format = "%m/%d/%Y") #fix date
+effectsall=rename(effectsall, Date=date) #Make sure the names are the same
+
+ef1=effectsall %>% select(Date, aq_record, measured_effect_size)
+ef1=ef1[-c(which(is.na(ef1$aq_record))),] #Take out NA's for things we don't have an aq_record for(Naupali)
+ef1[c(which(is.na(ef1$measured_effect_size))),which(names(ef1)=="measured_effect_size")]<- 0 #Replace NA's with 0's where no records were recorded in either control or effects experiment. 
+
+
+```
+
+
+# Read in Aquatox simulations generated from the Uncertainty tool, compare against the control simulations. 
+Compare against measured effects(i.e., mean error), and calculate average and median errors of all the group, the 6 species that waterborne is interested in, and the 3 species that Integral is focused on.
+```{r} 
+# QA: 9398 | Check that the random seeds of simulation input files matches the seedlist, and the model version of the matches the QAmodevers object  
+numsims=250
+
+seedlist=c(100, 200, 300, 400, 500)
+ATmodvers=8
+
+library(parallel)
+library(doParallel)
+cores=detectCores()
+cl<-makeCluster(cores[1]-1)
+registerDoParallel(cl)
+
+paramlist=expand.grid(1:numsims, seedlist)
+
+a=Sys.time()
+calfittab1=calfittab2=NULL #setting up median and mean table
+caltabfittabtotal=foreach(i=1:1250) %dopar% {
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(openxlsx)
+## Load raw Aquatox results from Monte Carlo runs 
+
+
+# QA: 1057 | Check that the perturbed files match the version of the model   
+#3 species LC50/EC50 sampled with Triangle Distributions: Cyclopidae, Daphinidae, Phyto Diatom EC50 photo
+aq.results.perturbed <- read_csv(paste0("Round_8_UMv8/Calibration_Uncertainty_TriMCv8_",paramlist[i,2],paramlist[i,1],".csv"))
+
+
+ #Clean perturbed data to match aq.results.control format for plotting
+aq.results.perturbed$Date <- as.Date(aq.results.perturbed$Date, format = "%m/%d/%Y") #fix date
+
+  #Adding aq names for total Odonata, Periphyton, and Phytoplankton
+aq.results.perturbed$'Total Odonata' = aq.results.perturbed$`Damselfly_Meso (g/m2 dry)` + aq.results.perturbed$`Dragonfly_Meso (g/m2 dry)` 
+aq.results.perturbed=aq.results.perturbed %>% 
+  rename('Total Periphyton'='Peri. Biomass (g/m2 dry)') %>%
+  rename('Total Phytoplankton' = 'Phyto. Biomass (mg/L dry)')
+
+  
+  aq.results.pert <- aq.results.perturbed %>%
+    dplyr::select(-2) %>% #remove unnecessary columns #DD changed this here because my version of aquatox doesn't have the same formatting for names
+    #rename(Date = `Date:`) %>% #rename Date: column
+    pivot_longer(cols= -c(Date), #Pivot data to long format
+                 names_to = "aq_record",
+                 values_to = "model_result") %>%
+    mutate(year = lubridate::year(Date)) %>% #create year column
+    mutate(date.obj = as.Date(Date)) %>% #create data object column
+    left_join(., crit%>%dplyr::select(parameter_group, consensus_group, aq_record)) %>%
+    filter(aq_record %in% unique(crit$aq_record)) %>% #filter for only those groups that have a criteria value
+    arrange(aq_record)
+
+  #Rename model_results as "perturbed"
+   aq.results.pert.final <- aq.results.pert %>%
+    rename(perturbed = model_result)
+
+## combine control and perturbed data
+aq.all <- inner_join(aq.results.cont.final, aq.results.pert.final, by = c("Date", "aq_record", "year", "date.obj", "parameter_group", "consensus_group"))
+
+
+## combine contl and perturbed data with experimental effects data mdd data
+filteraq=semi_join(aq.all, ef1, by = c("Date", "aq_record"))
+aq.all <- inner_join(filteraq,ef1, by = c("Date", "aq_record"))
+
+# QA: 8938 | Check that ((control-perturbed)/control) * 100  is the correct effect size calculation 
+aq.all$mod_effect_size <- ((aq.all$control-aq.all$perturbed)/aq.all$control)*100
+# QA: 4121 | Check that the absolute effect size difference calculation is abs(modeled_effect_size - measured_effect_size) 
+aq.all$aq.me=abs(aq.all$mod_effect_size-aq.all$measured_effect_size)
+
+
+# QA: 4007 | Check that the species groups mean and median effect size differences are calculated correctly using the piping, and that waterborne(5 species), integral, and grand means are all calculated correctly. 
+
+#Calculate average difference for each group 
+aq.all.groupdiff_mean=aq.all %>% 
+  group_by(aq_record) %>%
+    summarise(ME=mean(aq.me))
+# QA: 4873 | Check top make sure these 6 species are the species with effects that we are focusing on
+aq.all.waterborne_mean= aq.all.groupdiff_mean %>% filter(aq_record %in% 
+                          c("Phyto Diatom_Meso (mg/L dry)",
+                          "Phyto Crypto_Meso (mg/L dry)", 
+                          "Cyclopidae_Meso (mg/L dry)", 
+                          "Keratella_Meso (mg/L dry)",
+                          "CladoceranSmall_Meso (mg/L dry)",
+                          "Daphnidae_Meso (mg/L dry)"))
+
+waterbornemean=mean(aq.all.waterborne_mean$ME)
+
+aq.all.integral_mean= aq.all.groupdiff_mean %>% filter(aq_record %in% 
+                          c("Cyclopidae_Meso (mg/L dry)", 
+                          "Daphnidae_Meso (mg/L dry)", 
+                          "Phyto Diatom_Meso (mg/L dry)"))
+
+integralmean=mean(aq.all.integral_mean$ME)
+
+
+grandmean=mean(na.omit(aq.all.groupdiff_mean$ME)) 
+
+aq.all.diff_mean=rbind(aq.all.groupdiff_mean, c("WaterborneSpMean", waterbornemean), c("IntegralSpMean", integralmean), c("GrandMean", grandmean))
+
+calfittab1=data.frame("seed"=paramlist[i,2],"sim"=paramlist[i,1], pivot_wider(aq.all.diff_mean, names_from=aq_record, values_from = ME))
+
+
+#Median
+aq.all.groupdiff_median=aq.all %>% 
+  group_by(aq_record) %>%
+    summarise(ME=median(aq.me))
+
+aq.all.waterborne_median= aq.all.groupdiff_median %>% filter(aq_record %in% 
+                          c("Phyto Diatom_Meso (mg/L dry)",
+                          "Phyto Crypto_Meso (mg/L dry)", 
+                          "Cyclopidae_Meso (mg/L dry)", 
+                        "Keratella_Meso (mg/L dry)",
+                          "CladoceranSmall_Meso (mg/L dry)",
+                          "Daphnidae_Meso (mg/L dry)"))
+                           waterbornemedian=median(aq.all.waterborne_median$ME)
+
+
+aq.all.integral_median= aq.all.groupdiff_median %>% filter(aq_record %in% 
+                          c("Cyclopidae_Meso (mg/L dry)", 
+                          "Daphnidae_Meso (mg/L dry)", 
+                          "Phyto Diatom_Meso (mg/L dry)"))
+
+integralmedian=median(aq.all.integral_median$ME)
+
+
+grandmedian=median(na.omit(aq.all.groupdiff_median$ME))
+
+
+aq.all.diff_median=rbind(aq.all.groupdiff_median, c("WaterborneSpMedian", waterbornemedian), c("IntegralSpMedian", integralmedian),c( "GrandMedian", grandmedian))
+
+
+#
+calfittab2=data.frame("seed"=paramlist[i,2],"sim"=paramlist[i,1], pivot_wider(aq.all.diff_median, names_from=aq_record, values_from = ME))
+
+
+
+
+#Calculate the portion of time in which effects were seen at least 20, 50 and 75% of the time
+
+ effectgroups=c("Phyto Diatom_Meso (mg/L dry)",
+                          "Phyto Crypto_Meso (mg/L dry)", 
+                          "Cyclopidae_Meso (mg/L dry)", 
+                          "Keratella_Meso (mg/L dry)",
+                          "CladoceranSmall_Meso (mg/L dry)",
+                          "Daphnidae_Meso (mg/L dry)")
+
+# QA: 1398 | : Check that code correctly selects groups not in the effects group vector
+ noeffectgroups=as.data.frame(unique(aq.all[which(aq.all$aq_record%in%effectgroups==FALSE), names(aq.all)=="aq_record"]))
+ 
+aq.all$abseffect=abs(aq.all$mod_effect_size)
+
+# QA: 7342 | : Check that the noeffect group objects(noefg20,50,75, and noefgt20) are assembled correctly.  
+
+#Make vectors of the 20,50, and 75%'s of all of the non-effect species and calculate number of days in which effect sizes were less than or equal to 20%, 50%, and 75%, as well as the number of days with effect sizes >= 20%. 
+ ef20=ef50=ef75=gt20=NULL
+ for(k in 1:dim(noeffectgroups)[1]){
+   sub=aq.all %>% filter (aq_record==noeffectgroups[k,1])
+   ef20=c(ef20,length(which(sub$abseffect<=20))/dim(sub)[1])
+   ef50=c(ef50, length(which(sub$abseffect<=50))/dim(sub)[1])
+   ef75=c(ef75,length(which(sub$abseffect<=75))/dim(sub)[1])
+  gt20=c(gt20,length(which(sub$abseffect>=20)))}
+
+     noefg20=cbind(noeffectgroups, ef20)
+      noefg20 = pivot_wider(noefg20, names_from=aq_record, values_from = ef20)
+    noefg50=cbind(noeffectgroups, ef50)
+       noefg50 = pivot_wider(noefg50, names_from=aq_record, values_from = ef50)
+    noefg75=cbind(noeffectgroups, ef75)
+     noefg75 = pivot_wider(noefg75, names_from=aq_record, values_from = ef75)
+    noefgt20=cbind(noeffectgroups, gt20)
+     noefgt20 = pivot_wider(noefgt20, names_from=aq_record, values_from = gt20)
+     
+     noefg20$seed=noefg50$seed=noefg75$seed=noefgt20$seed=paramlist[i,2]
+     noefg20$run=noefg50$run=noefg75$run=noefgt20$run=paramlist[i,1]
+     noefg20$fileid=noefg50$fileid=noefg75$fileid=noefgt20$fileid=paste0(paramlist[i,2], paramlist[i,1])
+     
+# QA: 9618 | Check that the overall list (calfit) is compiled correctly, with correct labels for each object      
+calfit=list("Mean"=calfittab1, "Median"=calfittab2, "NoEffect20%"=noefg20, "NoEffect50%"=noefg50, "NoEffect75%"=noefg75, "DaysNoEffect>20%"=noefgt20, "rawdata"=aq.results.perturbed)
+
+}
+b=Sys.time() 
+b-a
+
+```
+
+save compiled file/load compiled files
+```{r}
+
+save(caltabfittabtotal, file=paste0("MonteCarlo_Sims_Table_UMv",ATmodvers,"_seed_", seedlist[1],"_to_", seedlist[length(seedlist)],".RData"))
+
+
+```
+
+
+# Compile the parallel processed file
+```{r}
+# QA: 4178 | Check that dataframes are correctly assembled from mean, median, and noeffect groups 
+calfittab1=calfittab2=noefg20=noefg50=noefg75=noefgt20=NULL
+for(i in 1:dim(paramlist)[1]){
+calfittab1=rbind(calfittab1,caltabfittabtotal[[i]]$Mean)
+calfittab2=rbind(calfittab2, caltabfittabtotal[[i]]$Median)
+noefg20=rbind(noefg20,caltabfittabtotal[[i]]$`NoEffect20%`)
+noefg50=rbind(noefg50,caltabfittabtotal[[i]]$`NoEffect50%`)
+noefg75=rbind(noefg75,caltabfittabtotal[[i]]$`NoEffect75%`)
+noefgt20=rbind(noefgt20,caltabfittabtotal[[i]]$`DaysNoEffect>20%`)
+}
+
+# QA: 4637 | Check that species groups columns are being selected here. 
+#Make into Dataframes
+calfittab1[,3:34]=apply(calfittab1[,3:34], 2, as.numeric)
+calfittab2[,3:34]=apply(calfittab2[,3:34], 2, as.numeric)
+
+#Create fileid to match with paramtab 
+calfittab1$fileid= paste0(calfittab1$seed, calfittab1$sim)
+calfittab2$fileid= paste0(calfittab2$seed, calfittab2$sim)
+
+MeanMetrics=calfittab1
+MedianMetrics=calfittab2
+
+```
+
+# Load in parameter sets from text files, and create a table of parameter values referenced by their simulation run and seed. 
+```{r}
+# QA: 9842 | Check that numsims is the same 
+#1. Load the text file of the model 
+paramtab=NULL
+for(i in seedlist){
+
+###
+#3 species
+file=readLines(paste0("Round_8_UMV8/Calibration_Uncertainty_TriMCv8_", i,".txt"))
+
+# QA: 7029 | Check that the code correctly picks out the either the parameter values or the labels using the 2+ and +4 adjustments 
+
+for (j in 1:numsims){
+Paramloc=which(file==paste0('Iteration ', j,' of 250')) #This grabs the vector of charactor locations
+
+
+#3 Species
+file1= file[c(2+Paramloc):c(Paramloc+4)] #Note, shifted to +6 from +4 when moved from 5 to 3 focus species
+
+
+####
+# QA: 8858 | Check that the code correctly extracts out the parameter values for each calibrated parameters of the simulations 
+file1=sapply(file1, function(x) {strsplit(x," ")})
+file1=as.numeric(sapply(file1, function(x){ x[[length(x)]]}))
+file1=c(i,j, file1)
+paramtab=c(paramtab, list(file1))
+
+}}
+
+#Collapse into table
+paramtab=as.data.frame(do.call("rbind", paramtab))
+
+####
+
+# QA: 1140 | Check that the code correctly selects out the calibrated parameter names from each of the simulations
+#3 Species
+file1= file[c(2+Paramloc):c(Paramloc+4)] 
+file1=sapply(file1, function(x) {strsplit(x," ")})
+paramnames=c(paste0(file1[[1]][2],"_",file1[[1]][3]),
+             paste0(file1[[2]][2],"_",file1[[2]][3]) , 
+             paste0(file1[[3]][2],"_",file1[[3]][3],"_",file1[[3]][4] )) 
+####
+
+# QA: 3409 | :Check that final paramtab is assumed correctly with both parameter names, values, and file ID columns. 
+names(paramtab)=c("Seed", "Run", paramnames)
+paramtab$fileid=paste0(paramtab$Seed, paramtab$Run)
+
+```
+
+# Default effects
+```{r}
+
+#3 species 
+defaulteffects=data.frame("Group"=c("Cyclopidae_LC50",	"Daphnidae_LC50",	"Phyto_Diatom_EC50"),"defvalues"=c(130,	87,	14))
+defaulteffects=pivot_wider(defaulteffects, names_from=Group, values_from = defvalues)
+
+```
+
+# Join the parameter table and simulation summaries mean and median tables.  
+```{r}
+# QA: 8130 | : Check that Mean and median metrics are both assembled correctly with the paramtab using the "fileid" column
+MeanMetrics=MeanMetrics[,-c(which(names(MeanMetrics)%in%c("seed","sim")))]
+MedianMetrics=MedianMetrics[,-c(which(names(MedianMetrics)%in%c("seed","sim")))]
+MeanMetrics=inner_join(paramtab, MeanMetrics, by="fileid")
+MedianMetrics=inner_join(paramtab, MedianMetrics, by="fileid")
+MeanMetrics = MeanMetrics %>% relocate(fileid, .after=Run)
+MedianMetrics = MedianMetrics %>% relocate(fileid, .after=Run)
+
+#3 species
+
+MeanMetrics$Cyclopidae_LC50DDiff=log10(MeanMetrics$Cyclopidae_LC50/defaulteffects$Cyclopidae_LC50)
+MeanMetrics$Daphnidae_LC50DDiff=log10(MeanMetrics$Daphnidae_LC50/defaulteffects$Daphnidae_LC50)
+MeanMetrics$Phyto_Diatom_EC50DDiff=log10(MeanMetrics$Phyto_Diatom_EC50/defaulteffects$Phyto_Diatom_EC50)
+
+
+#3 species
+MedianMetrics$Cyclopidae_LC50DDiff=log10(MedianMetrics$Cyclopidae_LC50/defaulteffects$Cyclopidae_LC50)
+MedianMetrics$Daphnidae_LC50DDiff=log10(MedianMetrics$Daphnidae_LC50/defaulteffects$Daphnidae_LC50)
+MedianMetrics$Phyto_Diatom_EC50DDiff=log10(MedianMetrics$Phyto_Diatom_EC50/defaulteffects$Phyto_Diatom_EC50)
+
+
+#This mimics the formatting of B. Sackman's table 
+
+#Run for 3 species
+MeanMetrics=MeanMetrics %>% relocate(c(Cyclopidae_LC50DDiff,Daphnidae_LC50DDiff, Phyto_Diatom_EC50DDiff), .after=Phyto_Diatom_EC50)
+
+MedianMetrics=MedianMetrics %>% relocate(c(Cyclopidae_LC50DDiff,Daphnidae_LC50DDiff, Phyto_Diatom_EC50DDiff), .after=Phyto_Diatom_EC50)
+
+
+
+```
+
+# Join the Proportion of time with effects tables with the parameterizations
+```{r}
+# QA: 9606 | :Check that each of the no effects tables are assembled correctly with the paramtab using fileid column
+noefg20=noefg20[,-c(which(names(noefg20)%in%c("seed","run")))]
+noefg50=noefg50[,-c(which(names(noefg50)%in%c("seed","run")))]
+noefg75=noefg75[,-c(which(names(noefg75)%in%c("seed","run")))]
+noefgt20=noefgt20[,-c(which(names(noefgt20)%in%c("seed","run")))]
+
+
+noefg20=inner_join(paramtab, noefg20, by="fileid")
+noefg50=inner_join(paramtab, noefg50, by="fileid")
+noefg75=inner_join(paramtab, noefg75, by="fileid")
+noefgt20=inner_join(paramtab, noefgt20, by="fileid")
+
+
+noefg20 = noefg20 %>% relocate(fileid, .after=Run)
+noefg50 = noefg50 %>% relocate(fileid, .after=Run)
+noefg75 = noefg75 %>% relocate(fileid, .after=Run)
+noefgt20 = noefgt20 %>% relocate(fileid, .after=Run)
+
+```
+
+
+# Export the tables to their own worksheets and save and xlsx file
+
+```{r Calibration parameter distributions}
+# QA: 7153 | Verify that excel workbook is created, and that correct objects and label sheet are assigned together. 
+library(openxlsx)
+wb <- createWorkbook()
+addWorksheet(wb, sheetName="MeanMetrics")
+addWorksheet(wb, sheetName="MedianMetrics")
+addWorksheet(wb, sheetName="NoEffGr_PropDays_w_<20%_ES")
+addWorksheet(wb, sheetName="NoEffGr_PropDays_w_<50%_ES")
+addWorksheet(wb, sheetName="NoEffGr_PropDays_w_<75%_ES")
+addWorksheet(wb, sheetName="NoEffGr_NumberDays_>20%_ES")
+
+writeData(wb, "MeanMetrics", MeanMetrics)
+writeData(wb, "MedianMetrics", MedianMetrics)
+writeData(wb, "NoEffGr_PropDays_w_<20%_ES", noefg20)
+writeData(wb, "NoEffGr_PropDays_w_<50%_ES", noefg50)
+writeData(wb, "NoEffGr_PropDays_w_<75%_ES", noefg75)
+writeData(wb, "NoEffGr_NumberDays_>20%_ES", noefgt20)
+
+
+### 3 species
+saveWorkbook(wb, file=paste0("MonteCarlo_Calibration_UMv",ATmodvers,"_seed_", seedlist[1],"_to_", seedlist[length(seedlist)],".xlsx"), overwrite=TRUE)
+
+
+
+```
+

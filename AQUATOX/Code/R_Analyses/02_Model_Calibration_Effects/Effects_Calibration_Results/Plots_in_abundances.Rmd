@@ -1,0 +1,462 @@
+---
+title: "Plots with abundances"
+author: "L.Mudge"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# PURPOSE
+Waterborne requested plots (for both control & effects results) to show species group abundances. This requires us to take our model results in biomass and convert back to *sample abundance* using most of the same assumptions as our 'forward' abundance to biomass conversions.
+
+Exceptions to previously established conversion assumptions:
+-For multispecies groups, we use the relative abundances of individual species to calculate a group biomass proportionate to those relative abundances. However, when working biomass-->abundance we need to determine how to split the biomass, as each species in the group has a unique/species-specific individual weight used in the equations.
+
+
+Options (10/18/22):
+-Use the relative abundances from the experiments to determine proportionate biomass per species/sampling date; convert biomass --> abundance per species, then sum to get 1 abundance per consensus group.
+-Use the relative abundances to calculate a weighted individual weight per consensus group, then do the conversion biomass --> abundance.
+
+Decision (10/27/22) - AL:
+-Use the relative abundances from the experiments to determine proportionate biomass per species/sampling date; convert biomass --> abundance per species, then sum to get 1 abundance per consensus group.
+
+**Need to verify: the measured mesocosm data (sum_life_stages_bySpecies) is abundance by sample, right? so when doing conversions we need to get back to sample abundance, not stop at enclosure, etc. -LM 10/26/22
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(openxlsx)
+
+
+theme <- theme(text = element_text(family = "sans")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.text = element_text(color="black", size=8),
+        legend.background = element_rect( size=.5, linetype= "solid", color = "black")) +
+  theme(panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black", size= 1)) +
+  theme(axis.text.x = element_text(color="black", size=8, vjust=0.5, angle=0)) +
+  theme(axis.text.y = element_text(color="black", size=8, vjust=0.5, angle=0)) +
+  theme(axis.title.x = element_text(color="black", size=9, face="bold")) +
+  theme(axis.title.y = element_text(color="black", size=9, face="bold")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, face="bold")) +
+  theme(axis.ticks = element_line(size = 1)) +
+  theme(axis.line = element_line(size = 1)) +
+  theme(strip.background =element_rect(fill="white")) +
+  theme(panel.border = element_rect(fill = NA, size = 0.25)) +
+  theme(strip.text = element_text(face="bold", size = 9)) +
+  theme(plot.margin = unit(c(0.5,0.5,.5,0.5), "cm"))
+```
+
+```{r load_data}
+
+# Conversion factors
+cf.macro <- read_csv("R_Analyses/02_Model_Calibration_Effects/Output/07_Biomass_Conversions/Macroinvertebrate_conv_factors.csv") 
+cf.zoo <- read_csv("R_Analyses/02_Model_Calibration_Effects/Output/07_Biomass_Conversions/Zooplankton_conv_factors.csv")
+cf.pp <- read_csv("R_Analyses/02_Model_Calibration_Effects/Output/07_Biomass_Conversions/Phyto_Peri_Conversion_Factors.csv") %>%
+  rename(units_for_aquatox = biomass_units_for_aquatox,
+         conversion_factor = conv_factor,
+         conversion_equation = conversion_equation_mesocosm_abundance_to_biomass) %>%
+  mutate(mesocosm_units = ifelse(parameter_group == "Phytoplankton-Chl-a", "ug/L",
+                                 ifelse(parameter_group == "Periphyton-Chl-a", "ug/a", NA)))
+
+cf.all <-bind_rows(cf.macro, cf.zoo, cf.pp)
+
+# SIMULATED EFFECTS DATA
+aq.results.effects <- read_csv("R_Analyses/02_Model_Calibration_Effects/01_Aquatox_Results_Calibration_Effects/Output/compiled_aquatox_results.csv") %>%
+  mutate(treatment = case_when(
+    treatment == "Control" ~ 1,
+    treatment == "0.3 ug/L" ~ 2,
+    treatment == "1 ug/L" ~ 3,
+    treatment == "3 ug/L" ~ 4,
+    treatment == "10 ug/L" ~ 5,
+    treatment == "33 ug/L" ~ 6
+  )) 
+# %>%
+#   left_join(., cf.all) %>%
+#   select(-c(variable,apply_species_lw_data)) %>%
+#   distinct()
+
+# MEASURED EFFECTS DATA - abundance
+d.meso.effects <- read_csv("R_Analyses/02_Model_Calibration_Effects/Output/02_Effects_and_Calib_byGroup/sum_life_stages_bySpecies.csv") %>% #add in macrophytes as consensus group
+  mutate(consensus_group = case_when(
+    parameter_group == "Macrophytes" ~ paste("Macrophytes"),
+    TRUE ~ consensus_group))
+
+# MEASURED EFFECTS DATA - biomass
+# add in Macroinvert QA doc and a similar calculation for zooplankton - use this for multispecies 
+d.bio.macro <- read.csv("Output/07_Biomass_Conversions/Macroinvertebrate_Biomass_Conversion_QA.csv") %>% select(-X) 
+
+d.bio.zoo <- read.csv("Output/07_Biomass_Conversions/Zooplankton_Indv_Biomass_conversion.csv") %>% select(-X)
+
+d.bio <-bind_rows(d.bio.macro, d.bio.zoo)
+```
+
+
+* What we will need:
+-mesocosm (observed data), by species (to get relative abundances)
+-simulated results from Aquatox (**save intermediary cleaned up versions from the final plot/table code)
+-verify units want for plots (see notes from Chiara in the analysis review doc)
+-all conversion factors
+-plot code
+
+
+Data sources(s)
+- "sum_life_stages_bySpecies.csv" - one file for control & effects
+- table of species, conversion factors & individual weights used (see the conversion factor files saved to the Output folder)
+- relative abundances for multi-species consensus groups - one dataset for control one for effects
+
+# GET RELATIVE ABUNDANCES FROM THE MEASURED DATA (ONLY NEEDED FOR MULTI-SPECIES GROUPS)
+```{r relative_abundance}
+
+
+# Find macroinvert and zooplankton groups that have multiple individual weights used in biomass conversions -- these are the groups we will have to first calculate relative abundances of species within these groups.
+ms1 <- cf.macro %>%
+  distinct(consensus_group, biomass_grouping, weight_mg_per_ind) %>%
+  group_by(consensus_group) %>%
+  filter(n() >1) %>%
+  distinct(consensus_group) %>%  # Gastropods, Nepomorpha, Hirudinea, Odonata
+  filter(consensus_group != "Odonata") # can ignore because we modeled these separately
+  #rename(consensus_group=biomass_grouping)
+
+ms2 <-cf.zoo %>%
+  distinct(consensus_group, weight_mg_per_ind) %>%
+  group_by(consensus_group) %>%
+  filter(n()>1) %>%
+  distinct(consensus_group) # Daphnidae, Rotifera_herbivorous1, Rotifera_herbivorous2
+
+
+## WILL NEED TO REPEAT THE BELOW STEPS FOR BOTH THE CONTROL MODEL AND THE EFFECTS MODEL PHASES:
+# Filter data for multi-species groups:
+d.filt.bio <-  d.bio %>% 
+  filter(consensus_group %in% c(ms1$consensus_group, ms2$consensus_group), variable != "Corixidae") # we excluded corixidae from model
+
+
+#STEP 1: Calculate a relative biomass per species/treatment for the multi-species groups
+d.rb <- d.filt.bio %>%
+  #filter(consensus_group %in% mult.groups) %>%
+  filter(consensus_group %in% c("Gastropoda", "Daphnidae", "Rotifera_herbivorous2")) %>%
+  ungroup() %>%
+  mutate(rel_biomass = ifelse(group_biomass==0, 0, sp_biomass/group_biomass)) %>% #Do this to avoid getting NaNs
+  group_by(parameter_group, consensus_group, study, treatment, variable, day) %>% # get 1 value per day, across all enclosures
+  mutate(mean_rel_biomass_date = mean(rel_biomass)) %>%
+  ungroup() %>%
+  group_by(parameter_group, consensus_group, study, treatment, variable) %>%
+  mutate(mean_rel_biomass_treatment = round(mean(mean_rel_biomass_date), 4)) %>%
+  ungroup() %>%
+  distinct(parameter_group, consensus_group, study, treatment, variable, mean_rel_biomass_treatment) %>%
+  group_by(parameter_group, consensus_group, study, treatment) %>%
+  mutate(group_sum_rel_bio = sum(mean_rel_biomass_treatment))  %>%
+  rename(rel_biomass = mean_rel_biomass_treatment)
+
+
+# For Nepo, Hir, & rotif_herb1, lots of zeros so don't get average rel biomass per treatment that are close to 100%, instead, try lump all days together:
+d.rb2 <- d.filt.bio %>%
+  ungroup() %>%
+  filter(consensus_group %in% c("Nepomorpha", "Hirudinea", "Rotifera_herbivorous1")) %>%
+  group_by(parameter_group, consensus_group, study, treatment, variable) %>%
+  mutate(rel_biomass = sum(sp_biomass)/sum(group_biomass)) %>%
+  distinct(parameter_group, consensus_group, study, treatment, variable, rel_biomass) %>%
+  group_by(parameter_group, consensus_group, study, treatment) %>%
+  mutate(group_sum_rel_bio = sum(rel_biomass))
+
+# Dataframe - relative biomass per species/treatment
+d.relbio <- bind_rows(d.rb, d.rb2)
+  
+# #Calculate relative abundances - OLD CODE
+# rel_abund <- d.filt.effects %>%
+#   group_by(parameter_group, consensus_group, date) %>%
+#   mutate(con_gr_abund = sum(abund_sum_lifestage)) %>% # get consensus group abundance
+#   ungroup() %>%
+#   group_by(parameter_group, consensus_group, variable, con_gr_abund, date) %>%
+#   summarize(tot_var_abund = sum(abund_sum_lifestage)) %>% # get species specific abundance
+#   mutate(rel_var_abund = signif(tot_var_abund/con_gr_abund, 2)) %>% # calculate relative abundance
+#   ungroup() %>%
+#   left_join(., cf.all, by = c("parameter_group", "consensus_group", "variable"))
+  #dplyr::select(parameter_group, consensus_group, variable, rel_var_abund, date)
+  # ungroup() %>%
+  # group_by(parameter_group, consensus_group) %>%
+  # mutate(total_prop = sum(rel_var_abund))
+
+```
+
+
+# CONVERT MODEL RESULTS FROM BIOMASS TO ABUNDANCE
+- Load cleaned up AQ results
+- Use conversion factors, equations, and previous code to get 1 abundance per AQ record/sampling date/treatment
+- Split for multi-species vs. single species groups
+```{r multispecies}
+vol_to_area <- 1760/8.15
+area_to_vol <- 1/vol_to_area
+
+mult.groups <- c("Gastropoda", "Nepomorpha", "Hirudinea", "Rotifera_herbivorous2", "Rotifera_herbivorous1", "Daphnidae")
+
+d.recalc <- aq.results.effects %>%
+  filter(consensus_group %in% mult.groups) %>%
+  left_join(., d.relbio %>% select(-group_sum_rel_bio)) %>%
+  left_join(., cf.all) %>%
+  filter(treatment %in% c(1,5,6)) %>%
+  mutate(B_sp_biomass = ifelse(consensus_group %in% mult.groups, rel_biomass*model_result, model_result)) %>%
+  group_by(parameter_group, consensus_group, treatment) %>%
+
+  mutate(B_abund = case_when(
+    parameter_group == "Zooplankton" & units_for_aquatox == "mg/L dry" ~ B_sp_biomass/weight_mg_per_ind,
+    parameter_group == "Zooplankton" & units_for_aquatox == "g/m2 dry" ~ ((B_sp_biomass*1000)/weight_mg_per_ind)*area_to_vol,
+    parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "mg/L dry" ~ B_sp_biomass/weight_mg_per_ind,
+    parameter_group == "Macroinvertebrates" & resulting_units == "ind/m2" & units_for_aquatox == "g/m2 dry" ~ (B_sp_biomass*1000)/weight_mg_per_ind, 
+    parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "g/m2 dry" ~ ((B_sp_biomass*1000)/weight_mg_per_ind)*area_to_vol)) %>% 
+  mutate(B_abund_sum_lifestage = ifelse(consensus_group %in% c("Asellus", "Gammarus"), B_abund / (1 + conversion_factor),
+                                        ifelse(parameter_group == "Macroinvertebrates"& !consensus_group %in% c("Asellus", "Gammarus"), B_abund / conversion_factor, 
+                                               B_abund))) %>%
+  group_by(treatment, parameter_group, consensus_group, date) %>%
+  mutate(B_group_abundance = sum(B_abund_sum_lifestage)) %>%
+  distinct(parameter_group, consensus_group, aq_record, treatment, date, units_for_aquatox, B_group_abundance) 
+  #mutate(across(c(B_abund_sum_lifestage, B_group_abundance, B_encl_abund, B_sp_biomass, diff), .fns= ~replace_na(.,0))) %>%
+
+
+
+
+##OLD CODE
+
+#filter for multi-species consensus groups identified in chunk above and treatment groups of interest (10, 33, control)
+# d.filt.model <- aq.results.effects %>% 
+#   filter(consensus_group %in% c(d.filt.effects$consensus_group) & treatment %in% c("10 ug/L", "33 ug/L", "Control")) 
+# 
+# #combine relative abundance measured data and model results
+# abund_multi_filt <- merge(d.filt.model, rel_abund, by = c("date", "parameter_group", "consensus_group"))
+# 
+# #calculate new model result (biomass)/species based on relative abundance
+# abund_multi <- abund_multi_filt %>%
+#   mutate(rel_biomass = model_result*rel_var_abund)
+# 
+# 
+# #calculate individuals/species
+# abund_multi <- abund_multi %>%
+#   mutate(abund_sum_lifestage = case_when(
+#             parameter_group == "Zooplankton" & units_for_aquatox == "mg/L dry" ~ rel_biomass/weight_mg_per_ind,
+#             parameter_group == "Zooplankton" & units_for_aquatox == "g/m2 dry" ~ (rel_biomass*1000)/(weight_mg_per_ind*area_to_vol),
+#     
+# #QA-CHECK -- Macroinvertebrate calculations for gastropods, hirudinae, and nepomorpha seem to be overestimating abundance and not follow biomass trend but cannot find any issues with conversion calculation
+#             parameter_group == "Macroinvertebrates" & resulting_units == "ind/m2" & units_for_aquatox == "g/m2 dry" ~ (rel_biomass*1000)/(weight_mg_per_ind*conversion_factor),
+#             parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "g/m2 dry" ~ (rel_biomass*1000)/(weight_mg_per_ind*conversion_factor*area_to_vol))) %>% 
+#   
+#   #calculate abundance per consensus group
+#   group_by(treatment, parameter_group, consensus_group, date) %>%
+#   mutate(group_abundance = sum(abund_sum_lifestage)) %>%
+#   distinct(parameter_group, consensus_group, aq_record, treatment, date, units_for_aquatox, group_abundance)
+
+
+```
+
+
+```{r single_species}
+vol_to_area <- 1760/8.15
+area_to_vol <- 1/vol_to_area
+
+abund_single_filt <- aq.results.effects %>%
+  filter(!consensus_group %in% mult.groups & treatment %in% c(1,5,6)) %>%  
+  left_join(., cf.all, by = c("parameter_group", "consensus_group")) #%>%
+ # mutate(biomass_grouping = ifelse(apply_species_lw_data %in% c("Anisoptera", "Zygoptera"), apply_species_lw_data, consensus_group)) # this is to account for modeling the two odonates separately
+
+
+#calculate individuals/species
+abund_single <- abund_single_filt %>%
+  mutate(B_abund = case_when(
+            parameter_group == "Zooplankton" & units_for_aquatox == "mg/L dry" ~ model_result/weight_mg_per_ind,
+            parameter_group == "Zooplankton" & units_for_aquatox == "g/m2 dry" ~ (model_result*1000)/(weight_mg_per_ind*area_to_vol),
+            parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "mg/L dry" ~ model_result/weight_mg_per_ind,
+            parameter_group == "Macroinvertebrates" & resulting_units == "ind/m2" & units_for_aquatox == "g/m2 dry" ~ (model_result*1000)/weight_mg_per_ind, 
+            parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "g/m2 dry" ~ ((model_result*1000)/weight_mg_per_ind)*area_to_vol,
+            parameter_group == "Periphyton-Chl-a" ~ model_result/(conversion_factor*scaling_factor),
+            parameter_group == "Phytoplankton-Chl-a" ~ (model_result*0.2464)/conversion_factor,
+            parameter_group == "Macrophytes" ~ model_result
+            )) %>% 
+    mutate(B_abund_sum_lifestage = ifelse(consensus_group %in% c("Asellus", "Gammarus"), B_abund / (1 + conversion_factor),
+                                        ifelse(parameter_group == "Macroinvertebrates" & !consensus_group %in% c("Asellus", "Gammarus"), B_abund / conversion_factor, 
+                                               B_abund))) %>%
+  
+  #calculate abundance per consensus group
+  distinct(parameter_group, consensus_group, aq_record, treatment, date, units_for_aquatox, B_abund_sum_lifestage) %>%
+  group_by(parameter_group, consensus_group, aq_record, treatment, date, units_for_aquatox) %>%
+  mutate(B_group_abundance = sum(B_abund_sum_lifestage)) %>%
+  distinct(parameter_group, consensus_group, aq_record, treatment, date, units_for_aquatox, B_group_abundance) 
+
+
+
+```
+
+```{r final_data_handling}
+#combine mulit and single species data
+abund_all <- rbind(d.recalc, abund_single) %>%
+  mutate(date = as.Date(date)) %>%#fix date for plotting
+  pivot_wider(names_from =treatment, values_from = B_group_abundance) %>%
+  filter(consensus_group != "Gammarus") %>%#remove gammarus because no measured data associated with this species for the effects data 
+  rename("33 ug/L" = "6", "10 ug/L" = "5", Control = "1") %>%
+  mutate(units = case_when(
+    parameter_group == "Macroinvertebrates" ~ "Individuals/sample",
+    parameter_group == "Zooplankton" ~ "Individuals/L", 
+    parameter_group == "Phytoplankton-Chl-a" ~ "Chl a ug/L",
+    parameter_group == "Periphyton-Chl-a" ~ "Chl a ug/cm2",
+    parameter_group == "Macrophytes" ~ "% coverage"
+  )) #add units
+
+
+#sum measured abundance data by consensus group
+d.effects <- d.meso.effects %>%
+  group_by(enclosure, parameter_group, consensus_group, treatment, date) %>%
+  summarise(abund_by_group = sum(abund_sum_lifestage)) %>%
+  ungroup()
+
+#combine measured data with aq_record names
+ aq_names <- read.xlsx("01_Aquatox_Results_Calibration_Effects/Input/Matching_AQ_criteria_names_02072022.xlsx")
+ 
+ d.effects.aq <- merge(d.effects, aq_names, by = c("parameter_group", "consensus_group"))
+
+#calculate summary statistics for measured abundances
+d.abund.final <- d.effects.aq %>%
+  group_by(treatment, aq_record, date) %>%
+  mutate(mean = mean(abund_by_group),
+            min = min(abund_by_group),
+            max = max(abund_by_group)) %>%
+  dplyr::select(-enclosure, -abund_by_group) %>% # remove vars only needed for individual enclosure measurements - lm 8/26
+  distinct(aq_record, date, .keep_all = TRUE) %>%
+  ungroup() %>%
+  mutate(date = as.Date(date)) #fix date for plotting
+
+```
+
+
+
+
+```{r 33ug/L_plots}
+
+min_date <- as.Date("2019-06-01")
+max_date <- as.Date("2019-09-06")
+
+pdf(paste0("01_Aquatox_Results_Calibration_Effects/Output/Integral_Abundance_Plots_effects_33ugL_", Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(abund_all$parameter_group)){
+  pd <- abund_all %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(pd$aq_record)){
+  
+  #get aquatox data
+  ad <- pd %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  
+  # get measured data
+  mt <- d.abund.final %>% filter(aq_record ==j, treatment ==6)
+  mc <- d.abund.final %>% filter(aq_record ==j, treatment ==1)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ed <- pd %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  #units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = mt, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = mt, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date, y = `33 ug/L`, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = mc, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = mc, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date, y = Control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Abundance (", ad$units, ")"), 
+        title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: Highest Dose (33 ug/l)")) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+
+print(p1)
+    
+  }
+}
+
+
+dev.off()
+
+```
+
+
+```{r 10ug/L_plots}
+
+pdf(paste0("01_Aquatox_Results_Calibration_Effects/Output/Integral_Abundance_Plots_effects_10ugL_", Sys.Date(), ".pdf", sep=""), paper="USr", width=10, height=7.25)
+par(omi=c(1.5,0.5,0,0.5), pin=c(7,8),pty='m')
+
+for(i in unique(abund_all$parameter_group)){
+  pd <- abund_all %>% filter(parameter_group == i) %>% arrange(consensus_group, aq_record)
+  
+  for(j in unique(pd$aq_record)){
+  
+  #get aquatox data
+  ad <- pd %>% filter(aq_record == j)   ## has col for control + one for each trt level
+  
+  # get measured data
+  mt <- d.abund.final %>% filter(aq_record ==j, treatment ==5)
+  mc <- d.abund.final %>% filter(aq_record ==j, treatment ==1)
+  
+  #ed <- d.effects.treatment6 %>% filter(aq_record == j)
+  ed <- pd %>% filter(aq_record ==j)
+  
+  #add control data
+  #cd <- d.control %>% filter(aq_record == j)
+  
+  #units <- regmatches(j, gregexpr("(?=\\().*?(?<=\\))", j, perl=T))[[1]]
+  
+  #AVERAGE PLOTS (same as script #11)
+  p1 <- ggplot() +
+    # Treatment:
+    geom_point(data = mt, aes(x = date, y = mean, colour = "red")) +
+    geom_linerange(data = mt, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "red") + #measured treatment
+    geom_path(data = ad, aes(x = date, y = `10 ug/L`, colour = "red", linetype = "Simulated treatment")) + #simulated treatment
+    
+    # Control:
+    geom_point(data = mc, aes(x = date, y = mean, colour = "green4")) +
+    geom_linerange(data = mc, aes(x = date, ymin = min, ymax= max, xmin = min_date, xmax = max_date), colour = "green4") + #measured control
+    geom_path(data = ad, aes(x = date, y = Control, colour = "green4", linetype = "Simulated control")) + #simulated control
+  
+    # POINTS legend:   #keep this order to match lines
+    scale_color_identity(breaks = c( "green4", "red"), labels = c( "Measured Control", "Measured Treatment"), guide = "legend") + 
+  
+    # LINES legend:   #Green=Sim control; red= Sim treatment
+    scale_linetype_manual(values = c(1,1), guide = guide_legend(override.aes = list(color= c("green4", "red")))) + 
+  
+    # Axes/Labels
+    scale_x_date(limits=c(min_date, max_date), date_breaks = "5 days", date_labels = "%b-%d") +
+    labs(x= "", 
+         y= paste0("Abundance (", ad$units, ")"), 
+        title = paste0("Parameter Group: ", i, "\nConsensus Group: ", unique(ed$consensus_group), "\nAQUATOX record: ", j, "\nTreatment: 10 ug/L")) +
+    theme +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1.3, hjust = 1.3))
+  
+
+
+print(p1)
+    
+  }
+}
+
+
+dev.off()
+```
+
+
+

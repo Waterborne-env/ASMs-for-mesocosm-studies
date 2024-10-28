@@ -1,0 +1,201 @@
+---
+title: "Compile Mesocosm Control Data"
+author: "L.Mudge"
+date: "3/29/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Organize data from the 4 mesocosm control studies into one master dataset. Data are provided by GmbH.
+
+Output = Dataframe with the following columns
+  * Study: 14a, 16a, 18c, 19b
+  * Parameter Group: (e.g. chemical parameters, macrophytes, phytoplankton, etc.)
+  * Units or ID: if a species will be units, if a chemical/phy parameter will be study ID
+  * Date: POSIXct date, all in the same format
+  * Enclosure: numbered 1-6
+  * Variable: Species name or chemical/physical parameter
+  * Value: measurement (biomass, count, etc.)
+
+4/14/21: Remaining to-do list
+* Remove unicode replacement symbol
+* Get units from physical/chemical parameters into the Units column (currently stored in Variable name)
+* Clean water level and sediment/water information (if need)
+
+# History
+3/29/2021 - L.Mudge starts script
+4/14/2021 - L.Mudge finishes data cleaning; saves output `control-long.csv`
+5/10/2021 - C.Schultz completes QA of script and output
+6/23/2021 - Script add to git repository; Added code to create calibration criteria timeseries
+9/16/2021 - L.Mudge adds date 2 column that sets all years = 2021 so experiments can be plotted on same time scale
+9/22/2021 - L.Mudge saves data as .rds file (by request) & updates Output file paths. Updated the subsetted calibration dataset to include all criteria. Add criteria to the full control_long dataset (saved as separate file).
+9/27/2021 - L.Mudge adds Macrophyte group to the calibration dataset (for purpose of figure generation in next scripts)
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(lubridate)
+
+```
+
+# Data
+* Original Files from Waterborne are organized by experiment & functional group (or physical parameter)
+* Excel file name components are separated by an underscore: experiment _ functional group _ experiment ID
+
+3/29/21: Issue with reading in Excel files: the experiment 14 Periphyton data, won't recognize the first row contents.Solution = read in .csv files
+4/14/21: For study 18c, macroinvertebrate file labeled as "full study", changing to control to match other files but need to note this for group
+
+# Read in Mesocosm Control Data
+
+```{r read_files}
+
+# Create a path for each experiment folder (note: not using the parent folder bc we don't want the files from _read-me or _received):
+path14 <- "Data/Control Data GmbH/Control_14a_MesocosmGmbH-ID-1478-04"
+path16 <- "Data/Control Data GmbH/Control-16a_MesocosmGmbH-ID-1478-10"
+path18 <- "Data/Control Data GmbH/Control-18c_MesocosmGmbH-ID-1502-02_Lambda"
+path19 <- "Data/Control Data GmbH/Control-19b_MesocosmGmbH-ID-1404-50_AZT"
+
+# Create a list of file names:
+files <- list.files(path = c(path14, path16, path18, path19),
+                    pattern = "*.csv",
+                    full.names = TRUE)
+
+
+# Create a df that has a nested list of the species data:
+control_data_list <- tibble(filename = files) %>% 
+  mutate(contents = map(filename, ~read_csv(.x, col_names = FALSE, skip_empty_rows = TRUE)), 
+         file_details = map_chr(contents, ~.x[[1,1]]), #first row in each file has context for the data
+         header_line = map(contents, ~.x[2, ]), # pull out the header line with col names
+         data_contents = map2(contents, header_line, ~slice(.x, -c(1:2)) %>% set_names(.y))) %>%
+  select(-contents, -header_line, -filename) %>%
+  separate(col= file_details, into = c("study", "parameter_group", "units_or_id"), sep = "_") %>% #splits file details into 3 columns
+  mutate(units_or_id = 
+           case_when(parameter_group == "Emerging-Insects" ~ "[Individuals/Sample]", #manually edit formatting some units
+                     parameter_group == "Phytoplankton-Chl-a" ~ "ug/L",
+                     parameter_group == "Periphyton-Chl-a" ~ "ug/a",
+                     TRUE ~ units_or_id),
+         data_contents = map(data_contents, ~janitor::remove_empty(.x)), #removes wholly empty rows and columns
+         study = ifelse(study == "Full-Study-18c", "Control-18c", study)) #renaming to match other study naming conventions
+
+
+# Send individual data frames to the environment- named by parameter group
+list2env(split(x=control_data_list, f=control_data_list$parameter_group), envir=.GlobalEnv) 
+
+```
+
+# Clean & Arrange Master Dataset
+
+The below chunk creates the master dataset (includes all critters, all experiments) using the individual dataframes in the environment. The `Water-Level` and `Sediment-Water-Parameters` are not included in this data cleaning step because they have a different format than the rest of the data (and we don't need these right away)
+
+```{r master_df}
+
+# get a list of data frames- but first remove ones we don't need first (rm= remove)
+#rm(dw)
+rm(control_data_list)
+rm(`Sediment-Water-Parameters`)
+rm(`Water-Level`)
+df_list <- Filter(function(x) is(x, "data.frame"), mget(ls()))
+
+
+# Iterate over a list of data frames:
+  # unnest the data_contents
+  # pivot_longer
+  # filter out any NA from value (so we aren't keeping empty rows)
+  # remove < symbol from values
+  # convert "value" to numeric class
+  # Fix Date column- put into standard format
+  # bind all data together
+
+out <- c()
+
+for(i in seq(1:length(df_list))){
+  tmp <- df_list[[i]] %>%
+    unnest(cols=c(data_contents)) %>%
+    pivot_longer(cols=!c(study:Enclosure), names_to = "Variable", values_to = "Value") %>%
+    filter(!is.na(Value)) %>%
+    mutate(Value = as.numeric(gsub("<", "", Value)),
+           Date = lubridate::parse_date_time(x=Date, orders = c("m/d/Y", "d.m.Y", "Y-m-d"), tz = "UTC"),
+           date2= Date) # created 2ndary date column so can set all years to be the same, below
+  
+  out <- bind_rows(out, tmp)
+  
+  
+}
+
+lubridate::year(out$date2) <- 2021
+out <- janitor::clean_names(out)
+
+#write_csv(out, "Output/01_Compile_Control_Data/control_long.csv")
+#saveRDS(out, file = "Output/01_Compile_Control_Data/control_long.rds")
+
+
+# Try removing the unicode replacement symbol (black triangle with question mark)
+#out$Variable <- enc2utf8(out$Variable)
+#out$Variable <- gsub("\uFFFD", "", out$Variable, fixed=TRUE)
+#out$Variable <- gsub("\u00B0", "", out$Variable, fixed=TRUE)
+
+```
+
+# Subset data with calibration criteria
+The purpose of this section is to create a subset output data file that only contains data for the groups that have calibration criteria- this is so that for future plots, etc. we don't have to repeat the filtering.
+
+Calibration Documents from Waterborne (see folder by same name in R_analyses)
+* `Criteria_ModelCalib_4Mar2021.docx` -- summary of all consensus groups
+* `criteria_groups_M_Z_03Mar2021.xlsx` -- zooplankton and macroinvertebrates methods (incl. how individual species grouped)
+* `criteria_groups_phyto_peri_3Mar2021.xlsx` -- phytoplankton and periphyton methods
+* `ControlGraphs_2021-01-28.docx` -- ref that explains which life stages are added together for a total abundance per date
+
+```{r calib_data}
+
+# Calibration criteria -- DO NOT MOVE EARLIER IN SCRIPT, will mess up creation of "out"
+crit <- read.xlsx("compiled_calibration_crit.xlsx", sheet = "calib_crit", detectDates = TRUE) %>%
+  rename(crit_min = min_value,
+         crit_max = max_value)
+
+# Add Macrophytes to the crit dataset- not part of the official calibration criteria, but important for modeled groups!
+macro <- out %>% filter(parameter_group == "Macrophytes") %>% distinct(parameter_group, variable, units_or_id) %>% rename(units=units_or_id)
+crit <- bind_rows(crit, macro)
+
+# Subset data
+dsub <- semi_join(out, crit, by = c("parameter_group", "variable"))
+
+#Check that the groups/species match EXACTLY between dsub and criteria:
+ct <- crit %>% distinct(parameter_group, variable) %>% arrange(parameter_group, variable)
+dt <- dsub %>% distinct(parameter_group, variable) %>% arrange(parameter_group, variable)
+
+dplyr::all_equal(ct, dt) #TRUE
+rm(ct)
+rm(dt)
+
+# Add consensus group
+#dc <- left_join(dsub, crit %>% select(parameter_group, consensus_group, variable), by = c("parameter_group", "variable"))
+dc <- left_join(dsub, crit, by = c("parameter_group", "variable")) %>%
+  relocate(enclosure, .after = study) %>%
+  relocate(c(consensus_group, variable), .after = parameter_group) %>%
+  relocate(date2, .after = date) %>%
+  dplyr::select(-units) #redundant
+  
+#write_csv(dc, "Output/01_Compile_Control_Data/control_data_for_calibration.csv")
+#saveRDS(dc, "Output/01_Compile_Control_Data/control_data_for_calibration.rds")
+
+```
+
+# Add calibration criteria to full control dataset
+```{r control_long_w_criteria}
+out.crit <- left_join(out, crit, by = c("parameter_group", "variable")) %>%
+  relocate(enclosure, .after = study) %>%
+  relocate(c(consensus_group, variable), .after = parameter_group) %>%
+  relocate(date2, .after = date) %>%
+  dplyr::select(-units)
+
+
+#write_csv(out.crit, "Output/01_Compile_Control_Data/control_long_wCriteria.csv")
+#saveRDS(out.crit, "Output/01_Compile_Control_Data/control_long_wCriteria.rds")  
+```
+
+
+
+

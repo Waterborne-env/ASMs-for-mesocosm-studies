@@ -1,0 +1,206 @@
+---
+title: "validation Criteria- Converting to Biomass"
+author: "A. Lindborg"
+date: "6/16/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Purpose
+
+Taking the validation criteria from Waterborne (for Macroinvertebrates, Zooplankton, Periphyton, Phytoplankton) and convert from abundance to biomass - using individual species weights and conversion factors/equations from when we converted the control data from abundance to biomass.
+
+Output = A table of consensus groups with original criteria values (abundance) and converted criteria values (biomass). We will plot these biomass criteria values over the model results for validation.
+
+# Documentation
+Details on methods, agreed upon w/B.Sackmann and D.Preziosi, can be found here: "R_Analyses\00_Model_Calibration\Documentation\Methods_Converting_Calibration_Criteria_Feb2022.docx" 
+
+For code & methods used to convert from abundance to biomass, see the 07_ series scripts for each group
+
+See Criteria_Model_Calib_4Mar2021.docx for calibration criteria values developed by Waterborne.
+
+# History
+
+
+# Setup & Data
+Files/Information will need:
+-Mesocosm control data (same datset used for biomass conversions- series 07 scripts)
+-Individual species weights used in biomass conversions
+-Conversion factors and conversion equations used in biomass conversions
+
+*Note: Validation criteria peak dates are for all years- set a default year of 2021, but in reality apply to all experiments in all years
+
+*Notes: When to expect NAs in the conversions equation setup*
+- The conversion_factor, conversion_equation, and resulting_units will be NA for Zooplankton b/c no enclosure extrapolation needed- going from vol to vol or vol to area only.
+- No weight_per_mg_individual for Phytoplankton or Periphyton as the conversion is based on Chl-A extracted and pre-determined conversion factors
+- vol_to_area ratio only relevant if units need to be converted from a volume (e.g. ind/L) to biomass in area (e.g. g/m2)
+- ChlA_extracted is only for phytoplankton
+- Peak dates & peak abundances were only developed for a handful of species, but all species should have a general min/max value. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+
+
+
+# Conversion factors
+cf.macro <- read_csv("Output/07_Biomass_Conversions/Macroinvertebrate_conv_factors.csv") 
+cf.zoo <- read_csv("Output/07_Biomass_Conversions/Zooplankton_conv_factors.csv")
+cf.pp <- read_csv("Output/07_Biomass_Conversions/Phyto_Peri_Conversion_Factors.csv") %>%
+  rename(units_for_aquatox = biomass_units_for_aquatox,
+         conversion_factor = conv_factor,
+         conversion_equation = conversion_equation_mesocosm_abundance_to_biomass) %>%
+  mutate(mesocosm_units = ifelse(parameter_group == "Phytoplankton-Chl-a", "ug/L",
+                                 ifelse(parameter_group == "Periphyton-Chl-a", "ug/a", NA)))
+
+
+# Find macroinvert and zooplankton groups that have multiple individual weights used in biomass conversions -- these are the groups we will have to first calculate relative abundances of species within these groups.
+ms1 <- cf.macro %>%
+  distinct(consensus_group, biomass_grouping, weight_mg_per_ind) %>%
+  group_by(consensus_group) %>%
+  filter(n() >1) %>%
+  distinct(consensus_group)  # Gastropods, Nepomorpha, Odonata
+  #rename(consensus_group=biomass_grouping)
+
+ms2 <-cf.zoo %>%
+  distinct(consensus_group, weight_mg_per_ind) %>%
+  group_by(consensus_group) %>%
+  filter(n()>1) %>%
+  distinct(consensus_group) # Daphnidae, Rotifera_herbivorous1, Rotifera_herbivorous2
+
+# Calibration criteria -- there is only one set of criteria per parameter&consensus group, so can narrow it down:
+crit <- read.xlsx("R_Analyses/compiled_calibration_crit.xlsx",
+                  sheet= "calib_crit",
+                  detectDates = TRUE) %>%
+  distinct(parameter_group, consensus_group, .keep_all = TRUE) %>%
+  dplyr::select(-variable) %>%
+  rename(mesocosm_units = units,
+         min_abund = min_value, # rename since we will create min, max, and midpoint cols with biomass
+         max_abund = max_value,
+         midpoint_abund = criteria_midpoint)
+
+# Matching names: this is the key that matches Aquatox record names to the parameter/consensus groups in the calibration criteria:
+aq.names <- read.xlsx("//pfs1w/C2000-C3999/C3143_Mesocosm_Waterborne/Working_Files/R_Analyses/SpeciesList_ControlData_v_Aquatox.xlsx",
+                      sheet= "Matching_Names")
+  
+```
+
+# For multi-species groups: Calculate single group weight based on relative proportion of species abundance
+```{r group_mass}
+# Mesocosm control data -- for determinging relative abundances
+d.meso <- readRDS("Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds") %>% 
+  filter(consensus_group %in% c(ms1$consensus_group, ms2$consensus_group), variable != "Corixidae") %>% # we excluded corixidae from model
+  dplyr::select(study:date, abund_sum_lifestage)
+
+# Calculate relative abundances
+rel_abund <- d.meso %>%
+  group_by(parameter_group, consensus_group) %>%
+  mutate(con_gr_abund = sum(abund_sum_lifestage)) %>%
+  ungroup() %>%
+  group_by(parameter_group, consensus_group, variable, con_gr_abund) %>%
+  summarize(tot_var_abund = sum(abund_sum_lifestage)) %>%
+  mutate(rel_var_abund = tot_var_abund/con_gr_abund) %>%
+  dplyr::select(parameter_group, consensus_group, variable, rel_var_abund)
+  # ungroup() %>%
+  # group_by(parameter_group, consensus_group) %>%
+  # mutate(total_prop = sum(rel_var_abund))
+
+group_mass <- bind_rows(cf.macro, cf.zoo) %>%
+  dplyr::select(parameter_group, consensus_group, variable, weight_mg_per_ind) %>%
+  filter(consensus_group %in% c(ms1$consensus_group, ms2$consensus_group)) %>%
+  left_join(., rel_abund, by = c("parameter_group", "consensus_group", "variable")) %>%
+  mutate(ind_mg_weighted = weight_mg_per_ind*rel_var_abund) %>%
+  group_by(parameter_group, consensus_group) %>%
+  summarize(group_weight_mg = sum(ind_mg_weighted))
+```
+
+# Create table with species groupings, weights, and convserion factors
+
+Steps for below:
+- Bind together conversion equations, etc. and remove unnecessary columns
+- Keep only distinct consensus groups, since this is how the calibration criteria is made (i.e. not species specific)
+- Replace multi-species consensus group individual weights with the group weights calculated above
+- Add in the calibration criteria values (left_join)
+- For Macroinverts, first extrapolate abundance from ind/sample --> ind/enclosure, using same methods as 07_ script
+- Apply biomass conversions for all groups, using same methods as the 07_ series scripts.
+```{r convert_crit_to_biomass}
+
+converted_criteria <- bind_rows(cf.macro, cf.zoo, cf.pp) %>%
+  dplyr::select(-biomass_grouping, -weight_per_ind, -original_wt_units, -apply_species_lw_data,-variable) %>%
+  distinct(parameter_group, consensus_group, .keep_all=TRUE) %>%
+  mutate(weight_mg_per_ind = ifelse(consensus_group %in% group_mass$consensus_group, group_mass$group_weight_mg[match(.$consensus_group,group_mass$consensus_group)], weight_mg_per_ind)) %>%
+  left_join(., crit) %>%
+  pivot_longer(cols = c(min_peak_abund:midpoint_abund), names_to = "abund_var", values_to = "abund_value") %>%
+    
+  mutate(
+    ## First have to go from ind/sample to ind/enclosure for macroinverts:
+    enclosure_abund = case_when(
+      consensus_group %in% c("Asellus", "Gammarus") ~ abund_value*(1 + conversion_factor),
+      parameter_group == "Macroinvertebrates" & !consensus_group %in% c("Asellus", "Gammarus") ~ abund_value*conversion_factor,
+      TRUE ~ NA_real_),
+    
+    ## Convert abundance to biomass:
+    crit_biomass = case_when(
+      # Macroinvertebrates:
+      parameter_group == "Macroinvertebrates" & resulting_units == "ind/L"  & units_for_aquatox == "mg/L dry" ~ enclosure_abund*weight_mg_per_ind,
+      parameter_group == "Macroinvertebrates" & resulting_units == "ind/m2" & units_for_aquatox == "g/m2 dry" ~ (enclosure_abund*weight_mg_per_ind)/1000, # divide by 1000 to go from mg to g
+      parameter_group == "Macroinvertebrates" &  resulting_units == "ind/L" & units_for_aquatox == "g/m2 dry" ~ (enclosure_abund*vol_to_area*weight_mg_per_ind)/1000,
+      
+      # Zooplankton:
+      parameter_group == "Zooplankton" & mesocosm_units == "[Individuals/L]" & units_for_aquatox == "mg/L dry" ~ abund_value*weight_mg_per_ind,
+      parameter_group == "Zooplankton" & mesocosm_units == "[Individuals/L]" & units_for_aquatox == "g/m2 dry" ~ (abund_value*vol_to_area*weight_mg_per_ind)/1000,# divide by 1000 to go from mg to g
+    
+      # Periphyton & Phytoplankton
+      parameter_group == "Periphyton-Chl-a" ~ conversion_factor*(abund_value)*scaling_factor,
+      parameter_group == "Phytoplankton-Chl-a" ~ (conversion_factor/0.2464)*abund_value
+      ),
+    
+    abund_var = gsub("_abund", "", abund_var)) %>% 
+  pivot_wider(names_from = abund_var, values_from = c(abund_value:crit_biomass)) %>%
+  left_join(., aq.names)
+  
+# Checks:
+  # mutate(peak_min_higher = ifelse(crit_biomass_min_peak>crit_biomass_min, TRUE, FALSE), # is the min peak biomass higher than general min? should be true
+  #        peak_max_higher = ifelse(crit_biomass_max_peak>crit_biomass_max, TRUE, FALSE)) 
+
+
+
+```
+
+```{r save_criteria}
+
+# Save full table + truncated version with just biomass values/ cols for plotting:    
+write_csv(converted_criteria, "Output/10_Convert_Calib_to_Biomass/Calibration_Criteria_in_Biomass_incl_IntermediateSteps.csv")
+
+cc <- converted_criteria %>%
+  dplyr::select(parameter_group, consensus_group, aq_record, units_for_aquatox, peak_date_start, peak_date_end, crit_biomass_min_peak:crit_biomass_max)
+write_csv(cc, "Output/10_Convert_Calib_to_Biomass/Calibration_Criteria_in_Biomass.csv")
+```
+
+# END QA
+
+*Create table that matches consensus groups to Aquatox record names*
+* Only need to do this once for reference. - LM 2/7/2022
+
+https://cran.r-project.org/web/packages/fedmatch/vignettes/Fuzzy-matching.html
+
+```{r ONE_TIME_ONLY, eval=FALSE}
+
+aq <- readxl::read_excel("Input/005_ASM_RingStudy_Mesocosm_Model - Ext_Export_C.xls")
+aq.names <- as.data.frame(names(aq)[c(18:24,27:45)]) # don't need the two macrophyte species
+names(aq.names) <- "aq_record"
+
+crit.names <- cc %>% distinct(parameter_group, consensus_group)
+crit.names <- as.data.frame(crit.names)
+
+# bind columns, rematch them manually in Excel:
+all.names <- bind_cols(crit.names, aq.names)
+write.xlsx(all.names, "Output/10_Convert_Calib_to_Biomass/Matching_AQ_criteria_names.xlsx", overwrite=TRUE)
+## Once write out, I manually went in and matched all the names together - LMUDGE on 2/7/2022. Save the matched names as a separate sheet to the SpeciesList_ControlData_v_Aquatox workbook.
+
+```
+

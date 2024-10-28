@@ -1,0 +1,295 @@
+---
+title: "Create Aquatox Overlay File"
+author: "A. Lindborg"
+date: "11/30/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Compile all the converted mesocosm control data into an overlay file for AQUATOX.
+
+*Currently not QA'd, for internal purposes only- this will format the biomass data for Brandon to upload into Aquatox*
+
+
+## Workflow Notes:
+1. Keep same ordering (i.e. sheet numbering and names) so it matches our documentation in SmartSheet and allows B.Sackmann to easily ID and upload the files to Aquatox (manual process).
+2. The summary statistics tab should remain un-numbered at the end (for senior review)
+3. Update the "df_update" to document what sheets were changed and summary of the changes.
+4. Whenever a new overlay file is uploaded to SmartSheets, analysts should log into SmartSheet and edit the file description to include a list of exactly WHICH tabs were modified, so B.Sackmann knows which ones to update in Aquatox.
+
+
+# Documentation
+Must follow format specified by B. Sackmann in email. *ADD LINK
+
+we just need simple XLS worksheets (one sheet per species/variable)…or a XLS workbook with separate tabs for each species
+
+# History
+11/30/2022 - A. Lindborg creates file
+
+
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+
+
+options(scipen = 9999)
+```
+
+# Data
+* Note: analyst should archive files based on the date. One file per group should be retained in the Output folder, whichever has most recent date.
+** If updates were made to biomass conversions, will need to update the file path use the most recent file!!
+```{r data}
+macroinvert <- read_csv("Output/07_Biomass_Conversions/Aquatox_Macroinvert_Overlay_2022-04-08.csv")
+macrophyte <- read_csv("Output/07_Biomass_Conversions/Aquatox_Macrophyte_Overlay_2022-04-08.csv")
+zooplank <- read_csv("Output/07_Biomass_Conversions/Aquatox_zooplankton_Overlay_2022-04-08.csv")
+periphyt <- read_csv("Output/07_Biomass_Conversions/Aquatox_PeriPhyto_Overlay_2022-04-08.csv")
+phys <- read_csv("Output/09_Abiotic_Parameters_for_Overlay/Phys_Chem_Overlay_Data.csv")
+met <- openxlsx::read.xlsx("Output/09_Abiotic_Parameters_for_Overlay/MET_Overlay_Data.xlsx")
+
+
+# Combine all the biomass data together:
+d <- bind_rows(macroinvert, macrophyte, zooplank, periphyt) 
+
+
+
+```
+
+```{r save_combined_biomass}
+
+# Save a reference dataframe that is just the biomass data from all groups:
+cd <- d %>%
+  dplyr::select(study, enclosure, parameter_group, date, units_for_aquatox, species_group, group_biomass) %>%
+  mutate(parameter_group = case_when(
+    !is.na(parameter_group) ~ parameter_group,
+    is.na(parameter_group) & species_group %in% c("Chara globularis", "Myriophyllum spicatum")  ~ "Macrophytes",
+    is.na(parameter_group) & grepl("Peri", species_group ) ~ "Periphyton-Chl-a",
+    is.na(parameter_group) & grepl("Phyto", species_group) ~ "Phytoplankton-Chl-a",
+    is.na(parameter_group) & species_group %in% c("Cladocera_phytophilous", "Rotifera_herbivorous1", "Cladocera_small", "Copepoda_predatory", "Daphnidae", "Copepoda_herbivorous", "Rotifera_herbivorous2", "Simocephalus") ~ "Zooplankton",
+    TRUE ~ NA_character_
+  ),
+  
+  consensus_group = case_when(
+    species_group == "Total Periphyton" ~ "Total Periphyton",
+    species_group == "Total Phytoplankton" ~ "Total Phytoplankton",
+    parameter_group %in% c("Periphyton-Chl-a", "Phytoplankton-Chl-a") ~ sub(".*? ", "", species_group), # doesn't override the total assignments above
+    species_group %in% c("Anisoptera", "Zygoptera") ~ "Odonata",
+    TRUE ~ species_group
+  )) %>%
+  rename(biomass=group_biomass)
+
+write_csv(cd, "2021_Validation/Output/07_Biomass_Conversions/all_control_data_in_biomass.csv")
+
+
+# https://stackoverflow.com/questions/32767164/use-gsub-remove-all-string-before-first-white-space-in-r
+```
+
+
+To do for cleanup & write out:
+-remove x column
+-rename columns to match names specified in Brandon's email
+-reorder columns to match order specified in Brandon's email - with additional ones at the end
+-Create an order column to preserve order for when we have to update with more variables
+-Create a workbook, split tabs based on species/parameter
+    - First write out biomass data, then add on physical parameters & MET data
+    - Keeping biomass data separate because phys/met data have different column names and MET data has a unique date format.
+```{r create_overlay_dataframes}
+## FORMAT BIOMASS DATA:
+aq_overlay <- d %>%
+  dplyr::select(-`...1`, -date2) %>% # first col might be called X1 or ...1
+  relocate(c(group_biomass, non_detects, min_bar_value, max_bar_value), .after = "date") %>%
+  relocate(c(group_abundance, group_encl_abundance, units_for_aquatox, study, enclosure), .after="max_bar_value") %>%
+  mutate(Empty = "") %>%
+  relocate(Empty, .after = max_bar_value) %>%
+  rename(Date = date,
+         Data = group_biomass,
+         `Non-detects`= non_detects,
+         `Min-bar value`= min_bar_value,
+         `Max-bar value` = max_bar_value,
+         `Sample Counts` = group_abundance,
+         `Enclosure Extrapolation`= group_encl_abundance,
+         `Final Units` = units_for_aquatox,
+         Study= study,
+         Enclosure = enclosure) %>%
+  mutate(Date = format(Date, format= "%m/%d/%Y")) %>%# Must be in this format for upload to Aquatox- LM
+         #Date_2021=format(Date_2021, format= "%m/%d/%Y"))
+  arrange(parameter_group, species_group, Date) %>%
+  dplyr::select(-parameter_group)
+
+
+# SET SPECIES ORDER FOR BIOMASS DATA:  
+  # Split the AQ overlay-- original vs. newly added, this way we keep tacking tabs on at the end and don't mess up the ordering:
+
+  # This is the original: need to filter out "new" records
+aq_overlay1 <- aq_overlay %>% 
+  filter(!species_group %in% c("Total Periphyton", "Total Phytoplankton", "Hirudinea"))  %>% # REMOVE ANY "NEW" RECORDS HERE
+  mutate(order = ordered(species_group, levels = c("Anisoptera", "Asellus", "Chaoborus", "Chironomidae", "Cloeon", "Gammarus" ,
+                                                  "Gastropoda", "Nepomorpha", "Oligochaeta", "Tanypodinae" , "Zygoptera" , "Chara globularis",
+                                                  "Cladocera_phytophilous","Cladocera_small","Copepoda_herbivorous","Copepoda_predatory","Daphnidae",
+                                                  "Myriophyllum spicatum", "Rotifera_herbivorous1","Rotifera_herbivorous2","Simocephalus",
+                                                  "Peri Blue Greens","Peri Diatoms", "Peri Greens","Phyto Blue Greens","Phyto Cryptophytes",
+                                                  "Phyto Diatoms", "Phyto Greens")))
+
+  # This is any groups added after the original already created: Add them onto the end of the list (i.e. newest species is last in order)
+aq_overlay2 <- aq_overlay %>% 
+  filter(species_group %in% c("Total Periphyton", "Total Phytoplankton", "Hirudinea")) %>% # KEEP ANY "NEW" RECORDS
+  mutate(order = ordered(species_group, levels = c("Total Periphyton", "Total Phytoplankton", "Hirudinea")))
+
+## FORMAT SUMMARY STATS:
+aq_sum_stats1 <- aq_overlay1 %>%
+  group_by(order, `Final Units`) %>%
+  #mutate(sheet_name = )
+  summarize(`Initial Condition (5th Percentile of Non-zero Values)` = quantile(Data[Data>0], 0.05), # initial condition, as defined by B.Sackmann (5th percentile of non-zero values)
+            Min = min(Data),
+            Max = max(Data),
+            Median = median(Data),
+            Average = mean(Data, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(order_no = 1:n(),
+         sheet_name = paste0(order_no, "_", order)) %>%
+  dplyr::select(-order, -order_no) %>%
+  relocate(sheet_name, .before = `Final Units`)
+
+aq_sum_stats2 <- aq_overlay2 %>%
+  group_by(order, `Final Units`) %>%
+  #mutate(sheet_name = )
+  summarize(`Initial Condition (5th Percentile of Non-zero Values)` = quantile(Data[Data>0], 0.05), # initial condition, as defined by B.Sackmann (5th percentile of non-zero values)
+            Min = min(Data),
+            Max = max(Data),
+            Median = median(Data),
+            Average = mean(Data, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(order_no = 1:n(),
+         #sheet_name = paste0(order_no, "_", order)) %>%
+         sheet_name = paste0(order)) %>% # numbers won't match bc these were put on at the very end.
+  dplyr::select(-order, -order_no) %>%
+  relocate(sheet_name, .before = `Final Units`)
+
+aq_sum_stats <- bind_rows(aq_sum_stats1, aq_sum_stats2)
+
+
+## FORMAT PHYSICAL DATA
+aq_phys <- phys %>%
+  dplyr::select(-`...1`, -parameter_group) %>% # first col might be X1 or ...1
+  rename(Date = date,
+         Study= study,
+         Enclosure= enclosure,
+         Variable = variable,
+         Data= value,
+         `Final Units` = units) %>%
+  mutate(`Non-detects` = NA,
+         `Min-bar value` = Data,
+         `Max-bar value` = Data,
+         Empty = "",
+         Date = format(Date, format= "%m/%d/%Y"), # Must be in this format for upload to Aquatox- LM
+         order = ordered(Variable, levels = c("Ammonium", "Nitrate", "Phosphate", "Temp_enclosure", "Avg_Water_Temp", "Water_Volume", "Oxygen", "pH"))) %>%
+  relocate(Date, Data, `Non-detects`, `Min-bar value`, `Max-bar value`, Empty, .before = Study)
+
+## FORMAT MET DATA
+aq_met <- met %>%
+  rename(Date = date,
+         Data = value,
+         Variable = variable,
+         `Final Units` = units) %>%
+  mutate(`Non-detects` = NA,
+         `Min-bar value` = Data,
+         `Max-bar value` = Data,
+         Empty = "",
+         order = ordered(Variable, levels = c("Light", "Windspeed"))) %>%
+  relocate(`Non-detects`, `Min-bar value`, `Max-bar value`, Empty, .before = Variable)
+
+
+rm(aq_overlay)
+
+```
+
+```{r ADD_UPDATE_NOTES}
+## FORMAT DOCUMENTATION: ANALYST SHOULD POPULATE EACH TIME SOMETHING IS CHANGED
+updated_sheets <- c("41_Hirudinea")
+
+df_update <- data.frame(updated_sheets) %>%
+  mutate(date = Sys.Date(),
+         notes = case_when(
+           updated_sheets == "41_Hirudinea" ~ "Add Hirudinea sheet."
+           # updated_sheets %in% c("22_Peri Blue Greens", "23_Peri Diamtoms", "24_Peri Greens") ~ "Biomass values multiplied by 4.35x scaling factor to account for walls of enclosures.",
+           # updated_sheets %in% c("39_Total Periphyton", "40_Total Phytoplankton") ~ "Newly added. Each is the sum of the individual species biomass of that group. Periphyton already includes scaling factor."
+           ),
+         initials = "L. Mudge")
+```
+
+
+# Save Workbook
+*SUGGESTION: If making major changes, suggest adding "_TEST" to the file path in the saveWorkbook() call and reviewing the workbook before overwriting the existing one- Lm
+```{r save_workbook}
+
+
+# Save a workbook, one tab per species:
+  # This package only saves .xlsx files, even if change the extension. Will manually open and save .xlsx to .xls for AQUATOX
+wb <- createWorkbook()
+n <- 0
+
+# Write out Biomass Data -- 28 species (as of 1/17/2022)
+for(i in seq_along(levels(aq_overlay1$order))) {
+  
+  sp <- levels(aq_overlay1$order)[i] # Get the species name based on the order
+  sub <- aq_overlay1 %>% filter(species_group==sp) %>% dplyr::select(-species_group, -order) # filer the data
+  
+  addWorksheet(wb, sheetName=paste(i, sp, sep="_"))
+  writeData(wb, sheet=paste(i, sp, sep="_"), x=sub , colNames = TRUE)
+  
+}
+
+# Write out Physical Parameter Data
+for(i in seq_along(levels(aq_phys$order))) { 
+  
+  n <- i + 28 # Add 28 since that is where prev records stopped
+  var <- levels(aq_phys$order)[i] # Get the species name based on the order
+  sub <- aq_phys %>% filter(Variable==var) %>% dplyr::select(-Variable, -order) # filer the data
+  
+  addWorksheet(wb, sheetName=paste(n, var, sep="_"))
+  writeData(wb, sheet=paste(n, var, sep="_"), x=sub , colNames = TRUE)
+}
+
+# Write out MET data:
+for(i in seq_along(levels(aq_met$order))) { 
+  
+  n <- i +36
+  var <- levels(aq_met$order)[i] # Get the species name based on the order
+  sub <- aq_met %>% filter(Variable==var) %>% dplyr::select(-Variable, -order) # filer the data
+  
+  addWorksheet(wb, sheetName=paste(n, var, sep="_"))
+  writeData(wb, sheet=paste(n, var, sep="_"), x=sub , colNames = TRUE)
+}
+
+# Write out NEW ADDITIONS:
+for(i in seq_along(levels(aq_overlay2$order))) {
+  n <- i + 38 # Add 38 since that was last numbered tab on 1/25/2022 AQ overlay file
+  sp <- levels(aq_overlay2$order)[i] # Get the species name based on the order
+  sub <- aq_overlay2 %>% filter(species_group==sp) %>% dplyr::select(-species_group, -order) # filer the data
+  
+  addWorksheet(wb, sheetName=paste(n, sp, sep="_"))
+  writeData(wb, sheet=paste(n, sp, sep="_"), x=sub , colNames = TRUE)
+}
+
+
+# Write out Summary Stats table:
+addWorksheet(wb, sheetName="Biomass_Summary_Stats")
+writeData(wb, sheet="Biomass_Summary_Stats", x=aq_sum_stats , colNames = TRUE)
+
+
+# Write out Updates table:
+addWorksheet(wb, sheetName="Updates")
+writeData(wb, sheet="Updates", x=df_update , colNames = TRUE)
+
+#saveWorkbook(wb, paste0("Output/07_Biomass_Conversions/aquatox_overlay_data_", sys.date.f, ".xlsx"), overwrite = TRUE)
+saveWorkbook(wb, paste0("2021_Validation/Output/08_Aquatox_Overlay_Data/aquatox_overlay_data.xlsx"), overwrite = TRUE)
+
+
+```
+
+

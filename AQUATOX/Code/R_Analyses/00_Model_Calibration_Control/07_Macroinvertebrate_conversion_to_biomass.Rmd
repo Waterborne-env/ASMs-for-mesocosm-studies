@@ -1,0 +1,224 @@
+---
+title: "Convert Macroinvertebrate Abundances to Biomass"
+author: "L.Mudge"
+date: "12/8/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Purpose
+Convert macroinvertebrate control data from abundance to biomass, using recent length-weight information provided by GmbH.
+
+## Steps
+1) Determine biomass per individual
+    - Use the "regression midpoints" values provided by Jurgen/GmBH, on the "Macroinvertebrates" tab in the "Additional Parameters Mesocosm 211210_vs.xlsx" worksheet.
+    - We are using the regression midpoints, and not the populations data, because that is what the other modeling groups are using for biomass conversions (i.e. model harmonization)
+    - Assign each group it's length/weight (LW) value. 
+    - If a specific species doesn't have LW values, assign the LW values of the closest proximity (e.g. Odonates, species Aeshna cyanea is a type of Anisoptera, so assign Anisoptera values)
+    
+2) Convert control data measurements from abundance (individuals/sample) to biomass (g/m2 or g/L)
+    - Use the conversion factors and equations from Waterborne 
+  
+3) Sum the total biomass for the modeled group
+    - For multi-species groups (e.g. Gastropods), determine biomass for each of the species (above step), but sum together for 1 gastropod biomass value
+    
+    
+
+
+
+# Documentation
+Relevant files in the documentation folder calibration analyses:
+
+"Email_Decision_on_Calibration_Biomass_Conversion_2021-12-10.pdf"
+"Email_Updated_Length_Data_2021-12-10.pdf"
+
+# History
+12/08/2021 - L.Mudge creates script
+12/10/2021 - Updates to include median values for groups lacking population data.- L.Mudge
+12/13/2021 - Updates midpoint data re: email from Jurgen with midpoints for the regression lines.- L.Mudge
+12/16/2021 - Creates output for Waterborne that has conversion documentation (equations, units, etc.)- L.Mudge
+01/06/2022 - Updates biomass calculations to provide 1 value per group- L.Mudge
+01/24/2022 - Reruns with updated units in the 'SpeciesList_ControlData_v_Aquatox.xlsx' source file.- L.Mudge
+02/04/2022 - Added chunk that saves the conversion factors - L.Mudge
+03/02/2022 - Updates to include conversion for leeches (Hirudinea). Includes re-saving all outputs.- L.Mudge
+# Setup
+```{r setup}
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(RColorBrewer)
+
+
+options(scipen = 9999)
+```
+
+# Data
+This analysis uses 3 data sets:
+
+1. Macroinvertebrate LW measurements collected by GmbH in 2021
+  - "Populations" data that has average lengths of some species/groups by date (avg_length_mm). These data come from mesocosm studies (although NOT the same mesocosm studies we are modeling) -- Will need to use this to calculate an indiviudal weight for Lymnaeidae <0.5cm
+  - Midpoint values for all groups, based on separately collected data (these data come from a real pond environment)
+  - Parameters for study specific allometric equations
+  
+2. Conversion factors from Waterborne:
+  - These were determined from previous meetings and are for converting individuals/sample to individuals/area for the Mesocosm control data
+  
+3. Mesocosm control data from Waterborne
+  -abund_sum_lifestage = sample abundances, with lifestages rolled up into 1 value (e.g. can include larvae, pupae, adults)
+
+
+Important Data Notes:
+
+-Weight data that are provided in the "Macroinvert_All" sheet are in mg-- this was a typo from Jurgen and is in his "explained" file.
+-The "log b" parameter in the "Midpoint" dataset actually appear to be "b" -- need to confirm this is the case.
+-Species/variable/consensus group names are not consistent between all these data sources, but is handled in the data compiling below so there will be a single variable (species) that has the same grouping names between datasets
+
+- Per Rob Pastorak- remove Corixidae species bc different feeding strategy from rest of group, so not using in our comparison- LM on 1/5/2022
+
+
+## Individual Weights & Conversion Factors for Macroinvertebrates
+```{r macro_LW}
+
+## LW values for regression midpoints:
+d.mid <- read.xlsx("Input/Macroinvertebrates_Biomass_Conversions.xlsx", sheet = "Macroinvert_Midpoints") %>% 
+  janitor::clean_names() %>%
+  mutate(species = ifelse(species == "Chironomus larvae", "Chironomidae", species)) # Change species name to match other data files -LM
+
+
+## Mesocosm conversion factors - filter for macroinverts only
+cf <- read.xlsx("R_Analyses/SpeciesList_ControlData_v_Aquatox.xlsx",
+                  sheet = "Species List for Conversions") %>%
+  janitor::clean_names() %>%
+  filter(parameter_group == "Macroinvertebrates") %>%
+  dplyr::select(parameter_group:resulting_units, units_for_aquatox, apply_species_lw_data) %>%
+  dplyr::select(-criteria_midpoint) %>%
+  filter(variable != "Corixidae") %>%
+    # Add the weight per individuals to the conversion factor table- use the regression midpoint weights (group decision)
+  mutate(weight_mg_per_ind = d.mid$weight_reg_mg_per_ind[match(.$apply_species_lw_data, d.mid$species)])
+
+cf$variable[cf$variable=="Chironomidae (larvae)"] <- "Chironomidae" # rename to match control data merging later on
+
+```
+
+**Calculate Individual Weight (mg)- Lymnaeidae (<0.5cm)**
+* There is no regression midpoint LW value for Lymnaeidae <0.5cm and the Lymnea (grown) range from 4-48cm, so not appropriate substitute
+* Use the "Macroinvertebrate Populations" LW data from Jurgen/GmBH to find a weight per individual for Lymnaeidae
+
+- Use parameters (a, b) from Jurgen's data
+- Allometric equation: W = a x L^b
+  - assuming W is body weight in mg
+  - assuming L is body length in mm
+  
+- Coded equation: weight_mg_per_ind = (a*(median_length_mm^b))
+
+
+```{r lymnaeidae_mass}
+# 1. Read in Populations Data & LW values:
+d.lym <- read.xlsx("Input/Macroinvertebrates_Biomass_Conversions.xlsx", sheet = "Macroinvert_All") %>%
+  janitor::clean_names() %>%
+  filter(species == "Lymnaeidae") %>%
+  mutate(avg_length_mm = as.numeric(avg_length_mm)) %>%
+  summarize(median_length_mm = median(avg_length_mm))
+
+eq.lym <- read.xlsx("Input/Macroinvertebrates_Biomass_Conversions.xlsx", sheet = "Pop_Equation_Values") %>% 
+  janitor::clean_names() %>%
+  filter(species == "Lymnaeidae")
+
+#2. Calculate the weight_mg_per_ind to add into the cf table:
+lym <- bind_cols(eq.lym, d.lym) %>%
+  mutate(weight_mg_per_ind = (a*(median_length_mm^b)))
+
+#3. Add Lymnaeidae weight to cf table:
+cf$weight_mg_per_ind[cf$variable=="Lymnaeidae (< 0.5 cm)"] <- lym$weight_mg_per_ind
+
+rm(d.lym)
+rm(eq.lym)
+rm(lym)
+
+```
+
+## Control Mesocosm Data
+* Start with the `sum_life_stages_bySpecies` dataset
+
+```{r meso_control_data}
+
+d.meso <- readRDS("Output/02_Control_and_Calib_byGroup/sum_life_stages_bySpecies.rds") %>% 
+  filter(parameter_group=="Macroinvertebrates", variable != "Corixidae") %>%
+  dplyr::select(study:date, abund_sum_lifestage)
+
+```
+
+
+# Convert Abundance to Biomass:
+After joining the conversion factors to the control data...
+
+1. Extrapolate sample abundance (ind/sample) to enclosure abundance (ind/L or ind/m2) ==> "enclosure_abundance"
+    * Mesocosm control data reports counts as individuals per sample, using different sampling techniques depending on the critter.
+    * The conversion factor, equations, and resulting units were provided by Waterborne.
+    * Based on the conversion equations, Asellus and Gammarus will be ind/sample * (1+conversion factor), all others are ind/sample*conv factor
+
+2. Calculate species-specific biomass
+    * conversion methods will depend on the resulting_units (enclosure abundance) and the units_for_aquatox
+    * Vol_to_area and area_to_vol ratios have been defined for cases when units change from volume to area and vice versa 
+        * 1760 = volume of water (L) in the enclosures (i.e. total volume critters could live in)
+        * 8.15 = area of enclosures (m2)
+        
+3. Sum biomass values by study, enclosure, date, and Aquatox record grouping (biomass_grouping)
+    * We need to report 1 biomass value per study/enclosure/date/group.
+    * Groupings are generally the same as consensus groups, with the exception for Odonates: we are modeling Anisoptera & Zygoptera separately
+
+
+```{r convert_abund_to_biomass}
+vol_to_area <- 1760/8.15
+#area_to_vol <- 8.15/1760 #Note 2/4/22: When the Aquatox units were updated on 1/24, you no longer need the area_to_vol ratio.
+
+d.bio <- left_join(d.meso, cf, by = c("parameter_group", "consensus_group", "variable")) %>%
+  mutate(enclosure_abund = ifelse(consensus_group %in% c("Asellus", "Gammarus"), abund_sum_lifestage * (1 + conversion_factor),
+                                    abund_sum_lifestage * conversion_factor),
+         sp_biomass = case_when(
+            resulting_units == "ind/L"  & units_for_aquatox == "mg/L dry" ~ enclosure_abund*weight_mg_per_ind,
+            resulting_units == "ind/m2" & units_for_aquatox == "g/m2 dry" ~ (enclosure_abund*weight_mg_per_ind)/1000, # divide by 1000 to go from mg to g
+            resulting_units == "ind/L"  & units_for_aquatox == "g/m2 dry" ~ (enclosure_abund*vol_to_area*weight_mg_per_ind)/1000), # divide by 1000 to go from mg to g
+            #resulting_units == "ind/m2" & units_for_aquatox == "mg/L dry" ~ enclosure_abund*area_to_vol*weight_mg_per_ind),
+         
+         biomass_grouping = ifelse(apply_species_lw_data %in% c("Anisoptera", "Zygoptera"), apply_species_lw_data, consensus_group)) %>%
+  group_by(study, enclosure, date, biomass_grouping) %>%
+  mutate(group_biomass = sum(sp_biomass),
+         group_abundance = sum(abund_sum_lifestage),
+         group_encl_abundance = sum(enclosure_abund)) %>%
+  distinct(study, enclosure, parameter_group, biomass_grouping, date, units_for_aquatox, group_biomass, group_abundance, group_encl_abundance)
+#write.csv(d.bio, paste0("Output/07_Biomass_Conversions/Macroinvertebrate_Biomass_by_ModeledGroups_", Sys.Date(), ".csv"))
+
+
+```
+
+```{r save_cf}
+# Added 2/4/22-- Saving the compiled conversion factors & ratios to use in conversion of calibration criteria:
+
+cf <- cf %>%
+  mutate(vol_to_area = ifelse(resulting_units == "ind/L"  & units_for_aquatox == "g/m2 dry", vol_to_area, NA_real_),
+         biomass_grouping = ifelse(apply_species_lw_data %in% c("Anisoptera", "Zygoptera"), apply_species_lw_data, consensus_group))
+
+#write_csv(cf, "Output/07_Biomass_Conversions/Macroinvertebrate_conv_factors.csv")
+```
+
+
+Subset table for Aquatox Overlay data file:
+-12/14: B.Sackmann requested a table for Aquatox that has the species, original counts (ind/sample), extrapolated enclosure counts (ind/enclosure), and final biomass (g/m2 or mg/L)
+```{r A_overlay}
+
+# Output in format for AQUATOX observed values overlay:
+AQ_MacroInvert <- d.bio %>%
+  rename(species_group = biomass_grouping) %>%
+  #dplyr::select(biomass_grouping, date, group_biomass, study, enclosure, abund_sum_lifestage, enclosure_abund, units_for_aquatox) %>%
+  mutate(non_detects = 0, 
+         min_bar_value = group_biomass,
+         max_bar_value = group_biomass)
+#write.csv(AQ_MacroInvert, paste0("Output/07_Biomass_Conversions/Aquatox_Macroinvert_Overlay_", Sys.Date(), ".csv"))
+
+```
+
+
+
+
