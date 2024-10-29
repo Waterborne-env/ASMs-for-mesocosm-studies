@@ -1,0 +1,15 @@
+aq_record,treatment,effect_less20,n,treat.name
+Asellus_Meso (g/m2 dry),6,FALSE,2,33 ug/L
+Calanoida_Meso (mg/L dry),6,FALSE,7,33 ug/L
+ChironomidOther_Meso (g/m2 dry),5,FALSE,6,10 ug/L
+ChironomidOther_Meso (g/m2 dry),6,FALSE,6,33 ug/L
+CladoceranPhyt_Meso (g/m2 dry),6,FALSE,10,33 ug/L
+Cloeon_Meso (g/m2 dry),6,FALSE,5,33 ug/L
+Gastropoda_Meso (g/m2 dry),6,FALSE,5,33 ug/L
+Peri Blue-Green_Meso (g/m2 dry),6,FALSE,8,33 ug/L
+Peri Diatom_Meso (g/m2 dry),6,FALSE,11,33 ug/L
+Peri Greens_Meso (g/m2 dry),6,FALSE,11,33 ug/L
+Phyto BlueGreen_Meso (mg/L dry),5,FALSE,2,10 ug/L
+Phyto BlueGreen_Meso (mg/L dry),6,FALSE,13,33 ug/L
+Phyto Greens_Meso (mg/L dry),6,FALSE,10,33 ug/L
+RotiferBranch_Meso (mg/L dry),6,FALSE,5,33 ug/L
