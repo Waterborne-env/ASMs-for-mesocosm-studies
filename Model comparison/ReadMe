@@ -2,7 +2,7 @@ In this folder, you can find the files concerning the comparison among the model
 1.	Figures comparing models’ scoring
 2.	Table comparing the calibration approaches (Calibration_approach_Table.doc)
 3.	The table showing the represented food web - slight differences exist among models, see the models’ documentation folders for details (FoodWeb_Matrix.xls)
-4.  The tables modelers had to fill out to verify that thier simulation results were within the control calibration criteria (Template_Model_Calibration_Results.xlsx and Template_Model_Calibration_Results_YN.xlsx)
+4.  The tables modelers had to fill out to verify that their simulation results were within the control calibration criteria (Template_Model_Calibration_Results.xlsx and Template_Model_Calibration_Results_YN.xlsx)
 5.  The tables comparing simulated effect sizes and MDD values calculated for the two validation mesocosm studies (Data_and_Simulation_results_2_appl.xlsx and Data_and_Simulation_results_3_peak.xlsx)
 6.  A word document containing the tables summarizing models' scores for control and effect calibration and validation, and the results of the MDD analyses of mesocosm data for the three effect studies (SI-tables.docx)
 
