@@ -1,1 +1,6 @@
+In this folder, you can find the files containing data used for the AZT simulations, which include:
+1.  Interpolated temperature data for the calibration study years (gaiac - Water temperature simulations in mesocosms 2013-2019.pdf and gaiac- Simulated Water temperature 2013-2019 mesocosm Homberg - V1.xls)
+2.  Interpolated temperature data for the validation study years (gaiac - Water temperature simulations in mesocosms 2021.pdf and 2021 Daily mean Water temperature mesocosm Homberg - Aachen weather.txt)
+3.	An Excel document showing the interpolated AZT concentrations used by the modelers when simulating effects (19b_AZT_interpolated_data.xls)
+
 
